@@ -635,6 +635,8 @@ async function localApi(path, method, body){
       if(!md) throw new Error('卡片不存在');
       return md;
     }
+    if(p === '/api/sync/export') return idbExportBundle();
+    if(p === '/api/sync/export-delta') return localExportSyncDelta();
     throw new Error('not found: ' + p);
   }
 
