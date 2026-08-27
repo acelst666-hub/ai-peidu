@@ -2,6 +2,8 @@
 /** Mac ↔ iPad 云同步：GitHub 私有 Gist 存增量包（笔记/聊天/卡片） */
 
 let _syncPushTimer = null;
+let _syncPullBusy = false;
+let _lastAutoPullAt = 0;
 
 function syncConfigured(s){
   s = s || APP_CFG || {};
@@ -83,24 +85,48 @@ function scheduleCloudSyncPush(){
   _syncPushTimer = setTimeout(async ()=>{
     try{
       await cloudSyncPush();
-      // 静默成功，不打扰阅读
     }catch(e){
       console.warn('云同步上传失败', e);
     }
   }, 4000);
 }
 
-async function maybeCloudSyncPullOnStart(){
+/** 打开 App / 回到前台时自动拉取（主屏幕版无需「刷新网页」） */
+async function maybeCloudSyncPullOnStart(opts){
+  opts = opts || {};
   if(!syncConfigured(APP_CFG) || APP_CFG.sync_auto_pull === false) return;
+  if(!APP_CFG.sync_gist_id) return;
+  if(_syncPullBusy) return;
+  const now = Date.now();
+  // 回到前台时节流，避免连点/反复切应用刷太勤
+  if(opts.fromResume && now - _lastAutoPullAt < 15000) return;
+  _syncPullBusy = true;
+  _lastAutoPullAt = now;
   try{
-    if(!APP_CFG.sync_gist_id) return;
     const r = await cloudSyncPull();
     if(r && r.ok && ((r.books||0)+(r.conversations||0)+(r.cards||0) > 0)){
       toast('已从云端同步笔记/聊天');
+      if(typeof router === 'function' && opts.refreshView !== false) router();
     }
   }catch(e){
     console.warn('云同步拉取跳过', e.message || e);
+  }finally{
+    _syncPullBusy = false;
   }
+}
+
+function installCloudSyncLifecycle(){
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'visible'){
+      maybeCloudSyncPullOnStart({ fromResume: true });
+    }
+  });
+  window.addEventListener('pageshow', (e)=>{
+    if(e.persisted) maybeCloudSyncPullOnStart({ fromResume: true });
+  });
+  window.addEventListener('focus', ()=>{
+    maybeCloudSyncPullOnStart({ fromResume: true });
+  });
 }
 
 async function uiCloudSyncPush(){
@@ -108,7 +134,7 @@ async function uiCloudSyncPush(){
   try{
     const r = await cloudSyncPush();
     toast('已上传（Gist '+(r.gist_id||'').slice(0,8)+'…）');
-    renderSettings();
+    if(typeof renderSettings === 'function' && location.hash.indexOf('/settings')>=0) renderSettings();
   }catch(e){
     toast('上传失败：'+(e.message||e));
   }finally{ hideBusy(); }
@@ -122,5 +148,33 @@ async function uiCloudSyncPull(){
     if(typeof router === 'function') router();
   }catch(e){
     toast('拉取失败：'+(e.message||e));
+  }finally{ hideBusy(); }
+}
+
+/** 侧栏一键：先拉后推（主屏幕 App 专用，代替浏览器刷新） */
+async function uiCloudSyncNow(){
+  if(!syncConfigured(APP_CFG)){
+    toast('请先在设置中开启云同步并填写 Token');
+    location.hash = '#/settings';
+    return;
+  }
+  showBusy('正在云同步…');
+  try{
+    let pulled = null;
+    try{ pulled = await cloudSyncPull(); }catch(e){
+      if(String(e.message||e).indexOf('尚无 Gist') >= 0){
+        // 首次：只能上传
+      }else{
+        throw e;
+      }
+    }
+    const pushed = await cloudSyncPush();
+    const parts = [];
+    if(pulled && pulled.ok) parts.push('已拉取');
+    if(pushed && pushed.ok) parts.push('已上传');
+    toast(parts.length ? parts.join(' · ') : '同步完成');
+    if(typeof router === 'function') router();
+  }catch(e){
+    toast('同步失败：'+(e.message||e));
   }finally{ hideBusy(); }
 }

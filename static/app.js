@@ -185,6 +185,7 @@ window.addEventListener('DOMContentLoaded', async ()=>{
     APP_CFG = Object.assign({}, APP_CFG, s);
   }catch(_){}
   await maybeCloudSyncPullOnStart();
+  installCloudSyncLifecycle();
   router();
 });
 
