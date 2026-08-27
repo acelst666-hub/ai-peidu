@@ -173,7 +173,7 @@ window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', async ()=>{
   await detectApiMode();
   if(API_MODE === 'local'){
-    try{ await localInit(); }catch(e){ console.error(e); toast('本地库初始化失败'); }
+    try{ await localInit(); }catch(e){ console.error(e); toast('本地库初始化失败：'+(e&&e.message?e.message:e)); }
     document.body.classList.add('mode-local');
     if('serviceWorker' in navigator){
       navigator.serviceWorker.register(new URL('static/sw.js', location.href)).catch(()=>{});
