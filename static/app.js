@@ -184,6 +184,7 @@ window.addEventListener('DOMContentLoaded', async ()=>{
     const s = await api('/api/settings');
     APP_CFG = Object.assign({}, APP_CFG, s);
   }catch(_){}
+  await maybeCloudSyncPullOnStart();
   router();
 });
 
@@ -894,13 +895,15 @@ async function renderDiscuss(bid){
     +         '<button class="btn sec sm" id="d_save">💾 保存选中为读书笔记</button></div>'
     +       '<div class="muted" style="font-size:12px;margin:2px 0 6px">@马克思 只叫马克思回复；@神鲸 只叫神鲸回复（默认神鲸）</div>'
     +       '<div class="row" style="align-items:flex-end;margin-top:8px">'
-    +         '<textarea id="d_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（⌘/Ctrl + Enter 发送）" style="flex:1;min-height:60px"></textarea>'
+    +         '<textarea id="d_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-height:60px"></textarea>'
     +         '<button class="btn" id="d_send" onclick="sendDiscuss(\''+bid+'\')">发送</button>'
     +       '</div>'
     +     '</div>'
     +   '</div>'
     + '</div>';
-  $('#d_input').addEventListener('keydown', e=>{ if(e.key==='Enter' && (e.metaKey||e.ctrlKey)) sendDiscuss(bid); });
+  $('#d_input').addEventListener('keydown', e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendDiscuss(bid); }
+  });
   $('#d_ctx_file').addEventListener('change', e=>{ if(e.target.files[0]) importContextFile(bid, e.target.files[0]); });
   $('#d_prev').onclick = discussPrevPage;
   $('#d_next').onclick = discussNextPage;
@@ -1036,6 +1039,7 @@ async function sendDiscuss(bid){
     if(r.error){ toast('出错：'+r.error); await loadDiscuss(bid, {anchor:'latest-turn'}); return; }
     $('#d_input').value='';
     await loadDiscuss(bid, {anchor:'latest-turn'});
+    if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
     if(r.configured===false){
       const pf = r.prompt || '';
       modal('<span class="close" onclick="closeModal()">×</span><h2>未配置 AI 接口 · 讨论兜底</h2>'
@@ -1069,6 +1073,7 @@ async function saveDiscussReply(bid){
   if(!txt){ toast('请粘贴 AI 回复'); return; }
   await api('/api/books/'+bid+'/messages','POST',{role:'assistant', speaker:'shenjing', content:txt, thread_id:DISCUSS.threadId||discussThreadId()});
   closeModal(); await loadDiscuss(bid, {anchor:'latest-turn'}); toast('已存入讨论');
+  if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
 }
 async function genDiscussCard(bid){
   const text = ($('#d_ctx_text') ? $('#d_ctx_text').value : '').trim();
@@ -1318,6 +1323,19 @@ async function renderSettings(){
     + '<input id="s_lookup_url" value="'+esc(s.lookup_url||'https://www.bing.com/search?q={q}')+'"></div>'
     + '<div class="field"><label>最长选区字数</label><input id="s_lookup_max" type="number" min="20" max="500" value="'+(s.lookup_max_chars||200)+'" style="max-width:120px"></div>'
     + '<button class="btn" onclick="saveSettings()">保存</button></div>'
+    + '<div class="card"><h2>云同步（Mac ↔ iPad）</h2>'
+    + '<p class="muted" style="margin-bottom:10px">用 GitHub <b>私有 Gist</b> 同步划线/想法与聊天记录（不含全书正文）。外出 Pad 上网时自动上传；回家 Mac 刷新页面即可拉取。Token 需勾选 <code>gist</code> 权限。</p>'
+    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_on"'+(s.sync_enabled?' checked':'')+'> 启用云同步</label>'
+    + '<div class="field"><label>GitHub Token（classic，勾选 gist）</label><input id="s_sync_token" type="password" value="'+esc(s.sync_github_token||'')+'" placeholder="ghp_…"></div>'
+    + '<div class="field"><label>Gist ID（首次上传后自动填写，两端填同一个）</label><input id="s_sync_gist" value="'+esc(s.sync_gist_id||'')+'" placeholder="首次可留空，点上传后自动生成"></div>'
+    + '<div class="field"><label>本机名称</label><input id="s_sync_device" value="'+esc(s.sync_device_name|| (API_MODE==='local'?'ipad':'mac'))+'" style="max-width:160px"></div>'
+    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/刷新时自动拉取</label>'
+    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_push"'+(s.sync_auto_push!==false?' checked':'')+'> 笔记/聊天保存后自动上传</label>'
+    + '<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px">'
+    + '<button class="btn" type="button" onclick="saveSettings().then(()=>uiCloudSyncPush())">☁ 上传到云端</button>'
+    + '<button class="btn sec" type="button" onclick="saveSettings().then(()=>uiCloudSyncPull())">⬇ 从云端拉取合并</button>'
+    + '<button class="btn ghost" type="button" onclick="saveSettings()">保存同步设置</button>'
+    + '</div></div>'
     + (API_MODE === 'local'
       ? '<div class="card"><h2>书库同步（Mac ↔ iPad）</h2>'
         + '<p class="muted" style="margin-bottom:10px">在 Mac 端导出书库包，拷到 iPad（AirDrop / 文件 App），在此导入。出门不带电脑时，阅读、划线、聊天记录都在 iPad 本地。</p>'
@@ -1392,6 +1410,12 @@ async function saveSettings(){
     lookup_enabled: !!($('#s_lookup_on')&&$('#s_lookup_on').checked),
     lookup_engine: eng,
     lookup_max_chars: Math.max(20, Math.min(500, parseInt(($('#s_lookup_max')&&$('#s_lookup_max').value)||200,10)||200)),
+    sync_enabled: !!($('#s_sync_on')&&$('#s_sync_on').checked),
+    sync_github_token: ($('#s_sync_token')&&$('#s_sync_token').value.trim()) || '',
+    sync_gist_id: ($('#s_sync_gist')&&$('#s_sync_gist').value.trim()) || '',
+    sync_device_name: ($('#s_sync_device')&&$('#s_sync_device').value.trim()) || (API_MODE==='local'?'ipad':'mac'),
+    sync_auto_pull: !!($('#s_sync_pull')&&$('#s_sync_pull').checked),
+    sync_auto_push: !!($('#s_sync_push')&&$('#s_sync_push').checked),
   };
   if(eng==='custom'){
     payload.lookup_url = ($('#s_lookup_url')&&$('#s_lookup_url').value.trim()) || 'https://www.bing.com/search?q={q}';
@@ -1924,6 +1948,7 @@ async function refreshReaderMarks(){
 async function persistReaderMarks(){
   if(!READER.bid) return;
   await api('/api/books/'+READER.bid, 'PUT', {reader_marks: READER.marks || []});
+  if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
 }
 function quoteHtmlNeedle(quote){
   return esc(quote || '').replace(/\r\n/g, '\n').replace(/\n/g, '<br>');
@@ -2518,7 +2543,7 @@ async function renderRead(bid, mode, key){
     + '<div class="chat-savebar"><label class="selall"><input type="checkbox" id="r_selall"> 全选</label>'
     + '<span id="r_selcount" class="muted">已选 0 条</span>'
     + '<div class="row" style="gap:8px"><button class="btn ghost sm" id="r_load_hist">加载本章历史</button><button class="btn sec sm" id="r_save">💾 保存选中为读书笔记</button></div></div>'
-    + '<div class="row" style="align-items:flex-end;margin-top:8px"><textarea id="r_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（⌘/Ctrl+Enter 发送）" style="flex:1;min-height:60px"></textarea>'
+    + '<div class="row" style="align-items:flex-end;margin-top:8px"><textarea id="r_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-height:60px"></textarea>'
     + '<button class="btn" id="r_send">发送</button></div>'
     + '</div></div></div>';
   view().innerHTML=h;
@@ -2533,7 +2558,9 @@ async function renderRead(bid, mode, key){
   const loadHist=$('#r_load_hist'); if(loadHist) loadHist.onclick = ()=>loadReadChat(bid);
   const selall=$('#r_selall'); if(selall) selall.onchange = (e)=>{ document.querySelectorAll('.msgsel-cb').forEach(cb=>cb.checked=e.target.checked); updateSelCount(); };
   const ch=$('#r_chapter'); if(ch) ch.onchange = async ()=>{ READER.threadId = readThreadId(); renderStarterQuestions(); clearReadChatPanel(); };
-  const input=$('#r_input'); if(input) input.addEventListener('keydown', e=>{ if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)) sendReadChat(READER.bid, READER.term, READER.mode); });
+  const input=$('#r_input'); if(input) input.addEventListener('keydown', e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendReadChat(READER.bid, READER.term, READER.mode); }
+  });
   READER.threadId = readThreadId();
   renderStarterQuestions();
   clearReadChatPanel();
@@ -2645,6 +2672,7 @@ async function sendReadChat(bid, term, mode){
     hideChatStatus();
     if(r.error){ toast('出错：'+r.error); await loadReadChat(bid, {anchor:'latest-turn'}); return; }
     $('#r_input').value='';
+    if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
     if(r.configured===false){ readChatFallbackSingle(bid, r.prompt||'', target); await loadReadChat(bid, {anchor:'latest-turn'}); return; }
     await loadReadChat(bid, {anchor:'latest-turn'});
   }catch(e){

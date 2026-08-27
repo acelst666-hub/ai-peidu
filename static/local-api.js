@@ -16,6 +16,12 @@ const LOCAL_DEFAULT_SETTINGS = {
   lookup_engine: 'bing',
   lookup_url: 'https://www.bing.com/search?q={q}',
   lookup_max_chars: 200,
+  sync_enabled: false,
+  sync_github_token: '',
+  sync_gist_id: '',
+  sync_auto_pull: true,
+  sync_auto_push: true,
+  sync_device_name: 'ipad',
 };
 
 const LOCAL_SEED_CHAPTERS = [
@@ -691,11 +697,13 @@ async function localApi(path, method, body){
       return map;
     }
     if(p === '/api/sync/export') return idbExportBundle();
+    if(p === '/api/sync/export-delta') return localExportSyncDelta();
     if(p === '/api/sync/import'){
       if(!body || !Array.isArray(body.books)) throw new Error('无效的书库包');
       await idbImportBundle(body);
       return {ok: true, books: body.books.length};
     }
+    if(p === '/api/sync/apply-delta') return localApplySyncDelta(body);
     m = p.match(/^\/api\/books\/([\w-]+)\/messages$/);
     if(m){
       const bid = m[1];
@@ -802,7 +810,97 @@ async function localApi(path, method, body){
   throw new Error('unsupported: ' + method);
 }
 
-async function localInit(){
+async function localExportSyncDelta(){
+  const books = await idbAllBooks();
+  const books_delta = [];
+  for(const b of books){
+    const marks = b.reader_marks || [];
+    const ctx = b.discussion_context;
+    if((marks && marks.length) || ctx){
+      books_delta.push({
+        id: b.id,
+        title: b.title || '',
+        reader_marks: marks,
+        discussion_context: ctx,
+      });
+    }
+  }
+  const tx = idbTx(['conversations'], 'readonly');
+  const convRows = await idbGetAll(tx.objectStore('conversations'));
+  const conversations = {};
+  for(const row of convRows){
+    if(row.messages && row.messages.length) conversations[row.book_id] = row.messages;
+  }
+  const s = await localGetSettings();
+  return {
+    version: 2,
+    kind: 'delta',
+    updated_at: localNow(),
+    device: s.sync_device_name || 'ipad',
+    books_delta,
+    conversations,
+    cards: await idbAllCards(),
+  };
+}
+
+function localMergeMessages(local, remote){
+  const seen = new Set();
+  const out = [];
+  for(const m of [...(local||[]), ...(remote||[])]){
+    if(!m || typeof m !== 'object') continue;
+    const k = [m.role, m.speaker, m.content, m.ts, m.thread_id||''].join('\0');
+    if(seen.has(k)) continue;
+    seen.add(k);
+    out.push(m);
+  }
+  out.sort((a,b)=>(a.ts||'').localeCompare(b.ts||''));
+  return out;
+}
+
+function localMergeMarks(local, remote){
+  const byId = {};
+  for(const m of [...(local||[]), ...(remote||[])]){
+    if(!m || !m.id) continue;
+    const old = byId[m.id];
+    if(!old){ byId[m.id] = m; continue; }
+    const ot = (old.thought||'').trim();
+    const nt = (m.thought||'').trim();
+    if(nt.length > ot.length || (m.created_at||'') >= (old.created_at||'')) byId[m.id] = m;
+  }
+  return Object.values(byId);
+}
+
+async function localApplySyncDelta(d){
+  if(!d || typeof d !== 'object') return {ok:false, error:'无效同步包'};
+  let books_n = 0, msg_n = 0, card_n = 0;
+  for(const item of (d.books_delta || [])){
+    if(!item.id) continue;
+    const b = await localGetBook(item.id);
+    if(!b) continue;
+    if('reader_marks' in item) b.reader_marks = localMergeMarks(b.reader_marks||[], item.reader_marks||[]);
+    if(item.discussion_context != null){
+      const old = b.discussion_context || {};
+      const neu = item.discussion_context || {};
+      if((neu.updated_at||'') >= (old.updated_at||'')) b.discussion_context = neu;
+    }
+    await localSaveBook(b);
+    books_n++;
+  }
+  for(const [bid, msgs] of Object.entries(d.conversations || {})){
+    const local = await localLoadConv(bid);
+    await localSaveConv(bid, localMergeMessages(local, msgs||[]));
+    msg_n++;
+  }
+  for(const c of (d.cards || [])){
+    if(!c.id) continue;
+    const old = await localGetCard(c.id);
+    if(!old || (c.created_at||'') >= (old.created_at||'')){
+      await localSaveCard(c);
+      card_n++;
+    }
+  }
+  return {ok:true, books:books_n, conversations:msg_n, cards:card_n, from_device:d.device||'', updated_at:d.updated_at||''};
+}
   await localDbInit();
   await localSeedIfEmpty();
 }
