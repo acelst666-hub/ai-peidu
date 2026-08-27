@@ -1325,16 +1325,18 @@ async function renderSettings(){
     + '<div class="field"><label>最长选区字数</label><input id="s_lookup_max" type="number" min="20" max="500" value="'+(s.lookup_max_chars||200)+'" style="max-width:120px"></div>'
     + '<button class="btn" onclick="saveSettings()">保存</button></div>'
     + '<div class="card"><h2>云同步（Mac ↔ iPad）</h2>'
-    + '<p class="muted" style="margin-bottom:10px">用 GitHub <b>私有 Gist</b> 同步划线/想法与聊天记录（不含全书正文）。外出 Pad 上网时自动上传；回家 Mac 刷新页面即可拉取。Token 需勾选 <code>gist</code> 权限。</p>'
+    + '<p class="muted" style="margin-bottom:10px">用 GitHub <b>私有 Gist</b> 同步划线/想法与聊天记录（不含全书正文）。<br>'
+    + '主屏幕 App <b>不用刷新网页</b>：打开/切回 App 会自动拉取；也可点侧栏 <b>☁ 同步</b>。笔记保存后会自动上传。</p>'
     + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_on"'+(s.sync_enabled?' checked':'')+'> 启用云同步</label>'
     + '<div class="field"><label>GitHub Token（classic，勾选 gist）</label><input id="s_sync_token" type="password" value="'+esc(s.sync_github_token||'')+'" placeholder="ghp_…"></div>'
     + '<div class="field"><label>Gist ID（首次上传后自动填写，两端填同一个）</label><input id="s_sync_gist" value="'+esc(s.sync_gist_id||'')+'" placeholder="首次可留空，点上传后自动生成"></div>'
     + '<div class="field"><label>本机名称</label><input id="s_sync_device" value="'+esc(s.sync_device_name|| (API_MODE==='local'?'ipad':'mac'))+'" style="max-width:160px"></div>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/刷新时自动拉取</label>'
+    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/切回 App 时自动拉取</label>'
     + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_push"'+(s.sync_auto_push!==false?' checked':'')+'> 笔记/聊天保存后自动上传</label>'
     + '<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px">'
-    + '<button class="btn" type="button" onclick="saveSettings().then(()=>uiCloudSyncPush())">☁ 上传到云端</button>'
-    + '<button class="btn sec" type="button" onclick="saveSettings().then(()=>uiCloudSyncPull())">⬇ 从云端拉取合并</button>'
+    + '<button class="btn" type="button" onclick="uiCloudSyncNow()">☁ 立即同步</button>'
+    + '<button class="btn sec" type="button" onclick="saveSettings().then(()=>uiCloudSyncPush())">仅上传</button>'
+    + '<button class="btn sec" type="button" onclick="saveSettings().then(()=>uiCloudSyncPull())">仅拉取</button>'
     + '<button class="btn ghost" type="button" onclick="saveSettings()">保存同步设置</button>'
     + '</div></div>'
     + (API_MODE === 'local'
@@ -1402,8 +1404,13 @@ async function importLibraryBundleMacFile(file){
   }
 }
 
-async function saveSettings(){
+async function saveSettings(opts){
+  opts = opts || {};
   const eng = ($('#s_lookup_eng')&&$('#s_lookup_eng').value) || 'bing';
+  let syncOn = !!($('#s_sync_on')&&$('#s_sync_on').checked);
+  const syncToken = ($('#s_sync_token')&&$('#s_sync_token').value.trim()) || '';
+  // 点同步时：填了 Token 就视为开启，避免漏勾选
+  if(opts.forSync && syncToken) syncOn = true;
   const payload = {
     api_base:$('#s_base').value.trim(),
     api_key:$('#s_key').value.trim(),
@@ -1411,8 +1418,8 @@ async function saveSettings(){
     lookup_enabled: !!($('#s_lookup_on')&&$('#s_lookup_on').checked),
     lookup_engine: eng,
     lookup_max_chars: Math.max(20, Math.min(500, parseInt(($('#s_lookup_max')&&$('#s_lookup_max').value)||200,10)||200)),
-    sync_enabled: !!($('#s_sync_on')&&$('#s_sync_on').checked),
-    sync_github_token: ($('#s_sync_token')&&$('#s_sync_token').value.trim()) || '',
+    sync_enabled: syncOn,
+    sync_github_token: syncToken,
     sync_gist_id: ($('#s_sync_gist')&&$('#s_sync_gist').value.trim()) || '',
     sync_device_name: ($('#s_sync_device')&&$('#s_sync_device').value.trim()) || (API_MODE==='local'?'ipad':'mac'),
     sync_auto_pull: !!($('#s_sync_pull')&&$('#s_sync_pull').checked),
@@ -1423,7 +1430,8 @@ async function saveSettings(){
   }
   const s = await api('/api/settings','POST', payload);
   APP_CFG = Object.assign({}, APP_CFG, s);
-  toast('已保存'); renderSettings();
+  if(!opts.silent){ toast('已保存'); renderSettings(); }
+  return s;
 }
 async function runMarxRepair(){
   const vol = ($('#repair_vol')?$('#repair_vol').value:'').trim();

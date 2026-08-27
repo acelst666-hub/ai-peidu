@@ -7,7 +7,45 @@ let _lastAutoPullAt = 0;
 
 function syncConfigured(s){
   s = s || APP_CFG || {};
-  return !!(s.sync_enabled && s.sync_github_token);
+  // 有 Token 即可同步；「启用」只控制自动拉/推
+  return !!(s.sync_github_token && String(s.sync_github_token).trim());
+}
+
+function syncAutoOn(s){
+  s = s || APP_CFG || {};
+  return syncConfigured(s) && s.sync_enabled !== false;
+}
+
+/** 从设置页表单即时读出（不依赖是否已点保存） */
+function readSyncFormPatch(){
+  if(typeof $ !== 'function' || !$('#s_sync_token')) return null;
+  const token = ($('#s_sync_token').value || '').trim();
+  if(!token) return null;
+  return {
+    sync_enabled: true,
+    sync_github_token: token,
+    sync_gist_id: ($('#s_sync_gist') && $('#s_sync_gist').value.trim()) || '',
+    sync_device_name: ($('#s_sync_device') && $('#s_sync_device').value.trim()) || (typeof API_MODE !== 'undefined' && API_MODE==='local' ? 'ipad' : 'mac'),
+    sync_auto_pull: !($('#s_sync_pull') && !$('#s_sync_pull').checked),
+    sync_auto_push: !($('#s_sync_push') && !$('#s_sync_push').checked),
+  };
+}
+
+async function ensureSyncSettingsSaved(){
+  const patch = readSyncFormPatch();
+  if(patch){
+    try{
+      if(typeof saveSettings === 'function' && $('#s_base')){
+        await saveSettings({ silent: true, forSync: true });
+      } else {
+        const s = await api('/api/settings', 'POST', patch);
+        APP_CFG = Object.assign({}, APP_CFG, s);
+      }
+    }catch(e){
+      console.warn('保存同步设置失败', e);
+    }
+  }
+  return APP_CFG;
 }
 
 async function ghGistHeaders(token){
@@ -20,8 +58,9 @@ async function ghGistHeaders(token){
 }
 
 async function cloudSyncPush(){
-  const s = await api('/api/settings');
-  if(!syncConfigured(s)) throw new Error('请先在设置中开启云同步并填写 GitHub Token（需 gist 权限）');
+  await ensureSyncSettingsSaved();
+  const s = Object.assign({}, await api('/api/settings'), APP_CFG);
+  if(!syncConfigured(s)) throw new Error('请先在设置中填写 GitHub Token（需 gist 权限）');
   const delta = await api('/api/sync/export-delta');
   const body = JSON.stringify(delta, null, 2);
   const headers = await ghGistHeaders(s.sync_github_token);
@@ -39,8 +78,9 @@ async function cloudSyncPush(){
     const j = await r.json();
     if(!r.ok) throw new Error((j.message || r.status) + (j.errors ? JSON.stringify(j.errors) : ''));
     gistId = j.id;
-    await api('/api/settings', 'POST', { sync_gist_id: gistId });
+    await api('/api/settings', 'POST', { sync_enabled: true, sync_gist_id: gistId });
     APP_CFG.sync_gist_id = gistId;
+    APP_CFG.sync_enabled = true;
   } else {
     const r = await fetch('https://api.github.com/gists/' + gistId, {
       method: 'PATCH',
@@ -56,8 +96,9 @@ async function cloudSyncPush(){
 }
 
 async function cloudSyncPull(){
-  const s = await api('/api/settings');
-  if(!syncConfigured(s)) throw new Error('请先开启云同步并填写 Token');
+  await ensureSyncSettingsSaved();
+  const s = Object.assign({}, await api('/api/settings'), APP_CFG);
+  if(!syncConfigured(s)) throw new Error('请先填写 GitHub Token');
   const gistId = (s.sync_gist_id || '').trim();
   if(!gistId) throw new Error('尚无 Gist ID：请先在任一端点「上传到云端」一次');
   const headers = await ghGistHeaders(s.sync_github_token);
@@ -80,7 +121,7 @@ async function cloudSyncPull(){
 }
 
 function scheduleCloudSyncPush(){
-  if(!syncConfigured(APP_CFG) || !APP_CFG.sync_auto_push) return;
+  if(!syncAutoOn(APP_CFG) || !APP_CFG.sync_auto_push) return;
   clearTimeout(_syncPushTimer);
   _syncPushTimer = setTimeout(async ()=>{
     try{
@@ -94,11 +135,10 @@ function scheduleCloudSyncPush(){
 /** 打开 App / 回到前台时自动拉取（主屏幕版无需「刷新网页」） */
 async function maybeCloudSyncPullOnStart(opts){
   opts = opts || {};
-  if(!syncConfigured(APP_CFG) || APP_CFG.sync_auto_pull === false) return;
+  if(!syncAutoOn(APP_CFG) || APP_CFG.sync_auto_pull === false) return;
   if(!APP_CFG.sync_gist_id) return;
   if(_syncPullBusy) return;
   const now = Date.now();
-  // 回到前台时节流，避免连点/反复切应用刷太勤
   if(opts.fromResume && now - _lastAutoPullAt < 15000) return;
   _syncPullBusy = true;
   _lastAutoPullAt = now;
@@ -151,15 +191,17 @@ async function uiCloudSyncPull(){
   }finally{ hideBusy(); }
 }
 
-/** 侧栏一键：先拉后推（主屏幕 App 专用，代替浏览器刷新） */
+/** 侧栏/设置页一键：先保存表单，再拉后推 */
 async function uiCloudSyncNow(){
-  if(!syncConfigured(APP_CFG)){
-    toast('请先在设置中开启云同步并填写 Token');
-    location.hash = '#/settings';
-    return;
-  }
-  showBusy('正在云同步…');
+  showBusy('正在保存并同步…');
   try{
+    await ensureSyncSettingsSaved();
+    if(!syncConfigured(APP_CFG)){
+      hideBusy();
+      toast('请先在 Token 框粘贴 ghp_ 开头的密钥');
+      location.hash = '#/settings';
+      return;
+    }
     let pulled = null;
     try{ pulled = await cloudSyncPull(); }catch(e){
       if(String(e.message||e).indexOf('尚无 Gist') >= 0){
@@ -173,7 +215,11 @@ async function uiCloudSyncNow(){
     if(pulled && pulled.ok) parts.push('已拉取');
     if(pushed && pushed.ok) parts.push('已上传');
     toast(parts.length ? parts.join(' · ') : '同步完成');
-    if(typeof router === 'function') router();
+    if(typeof renderSettings === 'function' && location.hash.indexOf('/settings')>=0){
+      renderSettings();
+    } else if(typeof router === 'function'){
+      router();
+    }
   }catch(e){
     toast('同步失败：'+(e.message||e));
   }finally{ hideBusy(); }
