@@ -901,6 +901,8 @@ async function localApplySyncDelta(d){
   }
   return {ok:true, books:books_n, conversations:msg_n, cards:card_n, from_device:d.device||'', updated_at:d.updated_at||''};
 }
+
+async function localInit(){
   await localDbInit();
   await localSeedIfEmpty();
 }
