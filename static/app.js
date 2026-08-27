@@ -176,7 +176,18 @@ window.addEventListener('DOMContentLoaded', async ()=>{
     try{ await localInit(); }catch(e){ console.error(e); toast('本地库初始化失败：'+(e&&e.message?e.message:e)); }
     document.body.classList.add('mode-local');
     if('serviceWorker' in navigator){
-      navigator.serviceWorker.register(new URL('static/sw.js', location.href)).catch(()=>{});
+      // 清掉旧缓存，避免 iPad 一直用坏掉的 local-api
+      try{
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(k => k.startsWith('ai-reader-pwa-') && k !== 'ai-reader-pwa-v7').map(k => caches.delete(k)));
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for(const r of regs){
+          if(r.active && !(r.active.scriptURL || '').includes('sw.js')) continue;
+        }
+      }catch(_){}
+      navigator.serviceWorker.register(new URL('static/sw.js?v=20260827f', location.href)).then(reg=>{
+        reg.update().catch(()=>{});
+      }).catch(()=>{});
     }
   }
   updateStorageHint();

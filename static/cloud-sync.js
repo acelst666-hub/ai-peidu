@@ -61,7 +61,14 @@ async function cloudSyncPush(){
   await ensureSyncSettingsSaved();
   const s = Object.assign({}, await api('/api/settings'), APP_CFG);
   if(!syncConfigured(s)) throw new Error('请先在设置中填写 GitHub Token（需 gist 权限）');
-  const delta = await api('/api/sync/export-delta');
+  // iPad：直接调本地函数，避免旧缓存里 GET/POST 路由不一致
+  let delta;
+  if(typeof API_MODE !== 'undefined' && API_MODE === 'local' && typeof localExportSyncDelta === 'function'){
+    delta = await localExportSyncDelta();
+  } else {
+    delta = await api('/api/sync/export-delta');
+  }
+  if(!delta || typeof delta !== 'object') throw new Error('导出同步包失败，请强制刷新后再试');
   const body = JSON.stringify(delta, null, 2);
   const headers = await ghGistHeaders(s.sync_github_token);
   let gistId = (s.sync_gist_id || '').trim();
@@ -116,8 +123,10 @@ async function cloudSyncPull(){
   if(delta.kind !== 'delta' && !delta.books_delta){
     throw new Error('同步文件格式不对，请重新上传');
   }
-  const result = await api('/api/sync/apply-delta', 'POST', delta);
-  return result;
+  if(typeof API_MODE !== 'undefined' && API_MODE === 'local' && typeof localApplySyncDelta === 'function'){
+    return localApplySyncDelta(delta);
+  }
+  return api('/api/sync/apply-delta', 'POST', delta);
 }
 
 function scheduleCloudSyncPush(){
