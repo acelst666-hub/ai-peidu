@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="AI陪读">
+<link rel="manifest" href="static/manifest.json">
+<link rel="apple-touch-icon" href="static/icon-192.svg">
+<title>AI 陪读</title>
+<link rel="stylesheet" href="static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+</head>
+<body>
+<aside id="sidebar">
+  <div class="brand">📖 AI 陪读</div>
+  <nav>
+    <a href="#/" data-route="/">书架</a>
+    <a href="#/search" data-route="/search">检索</a>
+    <a href="#/map" data-route="/map">🗺 阅读地图</a>
+    <a href="#/settings" data-route="/settings">设置</a>
+  </nav>
+  <div class="side-hint">加载中…</div>
+</aside>
+<main id="view"><div class="loading">加载中…</div></main>
+<script src="static/local-data.js"></script>
+<script src="static/local-api.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>

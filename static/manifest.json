@@ -1,0 +1,20 @@
+{
+  "name": "AI 陪读",
+  "short_name": "AI陪读",
+  "description": "离线阅读 · 联网 AI 陪读",
+  "start_url": "./?mode=local",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6f8",
+  "theme_color": "#b91c1c",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
