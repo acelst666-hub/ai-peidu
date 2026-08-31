@@ -44,12 +44,31 @@ a{color:var(--accent2)}
 h1{font-size:24px;margin:0 0 18px}
 h2{font-size:19px;margin:22px 0 12px}
 .section-title{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
-input,textarea,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+/* 文本框/下拉；勿作用于 checkbox/radio */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+textarea,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
   font-size:14px;font-family:inherit;background:#fff;color:var(--ink)}
+input[type="checkbox"],input[type="radio"]{
+  width:18px;height:18px;min-width:18px;min-height:18px;
+  margin:0;padding:0;flex:0 0 18px;cursor:pointer;accent-color:var(--accent);
+  vertical-align:middle;
+}
 textarea{min-height:90px;resize:vertical}
 .field{margin-bottom:14px}
 .field label{display:block;font-weight:600;margin-bottom:5px;font-size:14px}
 .field .hint{color:var(--sub);font-weight:400;font-size:12px}
+/* 设置项等：勾选框 + 说明文字横排对齐 */
+.check-row{
+  display:flex;flex-direction:row;align-items:flex-start;gap:10px;
+  margin-bottom:14px;font-weight:600;font-size:14px;line-height:1.55;
+  cursor:pointer;user-select:none;
+}
+.check-row input[type="checkbox"],.check-row input[type="radio"]{
+  margin-top:3px; /* 与首行文字对齐 */
+}
+.check-row>span,.check-row-text{flex:1 1 auto;min-width:0;font-weight:600}
+.check-row.muted-weight{font-weight:400}
+.check-row.muted-weight>span,.check-row.muted-weight .check-row-text{font-weight:400;color:var(--ink)}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .row>*{flex:0 0 auto}
 .tag{display:inline-block;background:var(--soft);color:var(--accent);border:1px solid #fecaca;

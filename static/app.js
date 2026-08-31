@@ -1347,7 +1347,7 @@ async function renderSettings(){
     + '<p class="muted" style="margin-top:14px">未配置时，点"生成卡片"会给出提示词，你在 AI 陪读对话里生成后粘回即可。</p></div>'
     + '<div class="card"><h2>选中即查</h2>'
     + '<p class="muted" style="margin-bottom:10px">在对话气泡、原文阅读区、知识卡片正文中划词，旁侧出现 🔍；点击后新开标签页搜索（默认必应）。</p>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_lookup_on"'+(s.lookup_enabled!==false?' checked':'')+'> 启用选中即查</label>'
+    + '<label class="check-row"><input type="checkbox" id="s_lookup_on"'+(s.lookup_enabled!==false?' checked':'')+'><span>启用选中即查</span></label>'
     + '<div class="field"><label>搜索引擎</label><select id="s_lookup_eng">'+engOpts+'</select></div>'
     + '<div class="field" id="s_lookup_url_wrap"'+(eng==='custom'?'':' style="display:none"')+'><label>自定义搜索 URL（用 <code>{q}</code> 表示关键词）</label>'
     + '<input id="s_lookup_url" value="'+esc(s.lookup_url||'https://www.bing.com/search?q={q}')+'"></div>'
@@ -1356,12 +1356,12 @@ async function renderSettings(){
     + '<div class="card"><h2>云同步（Mac ↔ iPad）</h2>'
     + '<p class="muted" style="margin-bottom:10px">用 GitHub <b>私有 Gist</b> 同步划线/想法与聊天记录（不含全书正文）。<br>'
     + '主屏幕 App <b>不用刷新网页</b>：打开/切回 App 会自动拉取；也可点侧栏 <b>☁ 同步</b>。笔记保存后会自动上传。</p>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_on"'+(s.sync_enabled?' checked':'')+'> 启用云同步</label>'
+    + '<label class="check-row"><input type="checkbox" id="s_sync_on"'+(s.sync_enabled?' checked':'')+'><span>启用云同步</span></label>'
     + '<div class="field"><label>GitHub Token（classic，勾选 gist）</label><input id="s_sync_token" type="password" value="'+esc(s.sync_github_token||'')+'" placeholder="ghp_…"></div>'
     + '<div class="field"><label>Gist ID（首次上传后自动填写，两端填同一个）</label><input id="s_sync_gist" value="'+esc(s.sync_gist_id||'')+'" placeholder="首次可留空，点上传后自动生成"></div>'
     + '<div class="field"><label>本机名称</label><input id="s_sync_device" value="'+esc(s.sync_device_name|| (API_MODE==='local'?'ipad':'mac'))+'" style="max-width:160px"></div>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/切回 App 时静默拉取（不刷新整页，不打断正在看的对话）</label>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_push"'+(s.sync_auto_push!==false?' checked':'')+'> 笔记/聊天保存后自动上传</label>'
+    + '<label class="check-row"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'><span>打开/切回 App 时静默拉取（不刷新整页，不打断正在看的对话）</span></label>'
+    + '<label class="check-row"><input type="checkbox" id="s_sync_push"'+(s.sync_auto_push!==false?' checked':'')+'><span>笔记/聊天保存后自动上传</span></label>'
     + '<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px">'
     + '<button class="btn" type="button" onclick="uiCloudSyncNow()">☁ 立即同步</button>'
     + '<button class="btn sec" type="button" onclick="saveSettings().then(()=>uiCloudSyncPush())">仅上传</button>'
@@ -1666,8 +1666,8 @@ function openMapNodeEditor(id){
   const idx = (m.concepts||[]).findIndex(x=>x.id===id); if(idx<0) return;
   const node = m.concepts[idx];
   const picked = new Set((node.links||[]).map(x => (x.book_id?('s:'+x.book_id):('c:'+(x.name||x.title||'')))));
-  const shelf = (RM_STATE.books||[]).map(b=>'<label class="row" style="gap:6px"><input type="checkbox" class="mnk" data-kind="shelf" data-id="'+b.id+'" '+(picked.has('s:'+b.id)?'checked':'')+'> '+esc(b.title)+'</label>').join('');
-  const custom = (RM_STATE.customBooks||[]).map((b,i)=>'<label class="row" style="gap:6px"><input type="checkbox" class="mnk" data-kind="custom" data-id="'+i+'" '+(picked.has('c:'+(b.name||''))?'checked':'')+'> '+esc(b.name||('书目'+(i+1)))+'</label>').join('');
+  const shelf = (RM_STATE.books||[]).map(b=>'<label class="check-row muted-weight"><input type="checkbox" class="mnk" data-kind="shelf" data-id="'+b.id+'" '+(picked.has('s:'+b.id)?'checked':'')+'><span>'+esc(b.title)+'</span></label>').join('');
+  const custom = (RM_STATE.customBooks||[]).map((b,i)=>'<label class="check-row muted-weight"><input type="checkbox" class="mnk" data-kind="custom" data-id="'+i+'" '+(picked.has('c:'+(b.name||''))?'checked':'')+'><span>'+esc(b.name||('书目'+(i+1)))+'</span></label>').join('');
   modal('<span class="close" onclick="closeModal()">×</span><h2>编辑节点：'+esc(node.term)+'</h2>'
     + '<div class="field"><label>概念名</label><input id="mn_term" value="'+esc(node.term||'')+'"></div>'
     + '<div class="field"><label>说明</label><textarea id="mn_note">'+esc(node.note||'')+'</textarea></div>'
@@ -1707,7 +1707,7 @@ async function saveReadingMap(){
 
 function openMapPlanGenerator(){
   const books = RM_STATE.books || [];
-  const checks = books.map(b=>'<label class="row" style="gap:6px"><input type="checkbox" class="mpb" value="'+b.id+'"> '+esc(b.title)+'</label>').join('');
+  const checks = books.map(b=>'<label class="check-row muted-weight"><input type="checkbox" class="mpb" value="'+b.id+'"><span>'+esc(b.title)+'</span></label>').join('');
   modal('<span class="close" onclick="closeModal()">×</span><h2>根据书目生成阅读地图</h2>'
     + '<div class="field"><label>计划名称</label><input id="mp_name" placeholder="例如：资本论专题计划"></div>'
     + '<div class="field"><label>选择书目（可多选）</label><div class="card" style="max-height:300px;overflow:auto">'+(checks||'<span class="muted">暂无书目</span>')+'</div></div>'
