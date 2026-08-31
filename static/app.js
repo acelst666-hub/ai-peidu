@@ -195,7 +195,7 @@ window.addEventListener('DOMContentLoaded', async ()=>{
     const s = await api('/api/settings');
     APP_CFG = Object.assign({}, APP_CFG, s);
   }catch(_){}
-  await maybeCloudSyncPullOnStart();
+  await maybeCloudSyncPullOnStart({ silent: true });
   installCloudSyncLifecycle();
   router();
 });
@@ -221,6 +221,24 @@ function router(){
   if(path==='/settings') return renderSettings();
   if((m=path.match(/^\/book\/(.+)\/read$/))) return renderReader(m[1]);
   view().innerHTML='<div class="card">页面不存在</div>';
+}
+
+/** 云同步后局部刷新：不重绘整页，避免清空输入框与聊天区 */
+async function refreshViewAfterCloudSync(opts){
+  opts = opts || {};
+  const hash = location.hash.slice(1) || '/';
+  const [path] = hash.split('?');
+  let m;
+  if((m=path.match(/^\/book\/(.+)\/discuss$/))){
+    if($('#msgs')) await loadDiscuss(m[1], {anchor: opts.anchor || 'latest-turn'});
+    return;
+  }
+  if((m=path.match(/^\/book\/(.+)\/read\/chapter\/(.+)$/)) || (m=path.match(/^\/book\/(.+)\/read\/keyword\/(.+)$/))){
+    if(READER.chatHistLoaded && $('#r_msgs')) await loadReadChat(m[1], {anchor: opts.anchor || 'latest-turn'});
+    return;
+  }
+  if(path==='/settings'){ renderSettings(); return; }
+  if(path==='/' || path===''){ renderBooks(); return; }
 }
 
 // ---------------- 书架 ----------------
@@ -1342,7 +1360,7 @@ async function renderSettings(){
     + '<div class="field"><label>GitHub Token（classic，勾选 gist）</label><input id="s_sync_token" type="password" value="'+esc(s.sync_github_token||'')+'" placeholder="ghp_…"></div>'
     + '<div class="field"><label>Gist ID（首次上传后自动填写，两端填同一个）</label><input id="s_sync_gist" value="'+esc(s.sync_gist_id||'')+'" placeholder="首次可留空，点上传后自动生成"></div>'
     + '<div class="field"><label>本机名称</label><input id="s_sync_device" value="'+esc(s.sync_device_name|| (API_MODE==='local'?'ipad':'mac'))+'" style="max-width:160px"></div>'
-    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/切回 App 时自动拉取</label>'
+    + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_pull"'+(s.sync_auto_pull!==false?' checked':'')+'> 打开/切回 App 时静默拉取（不刷新整页，不打断正在看的对话）</label>'
     + '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_sync_push"'+(s.sync_auto_push!==false?' checked':'')+'> 笔记/聊天保存后自动上传</label>'
     + '<div class="row" style="gap:10px;flex-wrap:wrap;margin-top:8px">'
     + '<button class="btn" type="button" onclick="uiCloudSyncNow()">☁ 立即同步</button>'
@@ -1942,7 +1960,7 @@ function readCtx(b, term, mode){
   if(mode==='chapter') return chapterSlice(b.raw_text||'', term, b.chapters||[]);
   return findPassages(b.raw_text||'', term).slice(0,6).join('\n\n').slice(0,6000);
 }
-let READER = {bid:null, mode:null, term:null, pages:[], idx:0, threadId:'', marks:[]};
+let READER = {bid:null, mode:null, term:null, pages:[], idx:0, threadId:'', marks:[], chatHistLoaded:false};
 let CHAT_MSGS = [];
 let MARK_UI = {
   pendingQuote:'', pendingRect:null, openTagId:null,
@@ -2588,6 +2606,7 @@ async function renderRead(bid, mode, key){
 }
 function clearReadChatPanel(){
   CHAT_MSGS = [];
+  READER.chatHistLoaded = false;
   const box=$('#r_msgs');
   if(box) box.innerHTML='<div class="muted" style="padding:10px">当前默认不自动加载历史。你可直接提问，或点「加载本章历史」。</div>';
   updateSelCount();
@@ -2596,6 +2615,7 @@ async function loadReadChat(bid, opts){
   const tid = READER.threadId || readThreadId();
   const msgs=await api('/api/books/'+bid+'/messages?thread_id='+encodeURIComponent(tid));
   CHAT_MSGS = msgs || [];
+  READER.chatHistLoaded = true;
   const box=$('#r_msgs');
   if(!box) return;
   if(!CHAT_MSGS.length){ box.innerHTML='<div class="muted" style="padding:10px">还没有对话。可点上方建议问题，或直接输入你的问题。</div>'; updateSelCount(); return; }

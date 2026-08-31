@@ -141,40 +141,49 @@ function scheduleCloudSyncPush(){
   }, 4000);
 }
 
-/** 打开 App / 回到前台时自动拉取（主屏幕版无需「刷新网页」） */
+/** 打开 App / 切回前台时静默拉取（不整页刷新） */
 async function maybeCloudSyncPullOnStart(opts){
   opts = opts || {};
   if(!syncAutoOn(APP_CFG) || APP_CFG.sync_auto_pull === false) return;
   if(!APP_CFG.sync_gist_id) return;
   if(_syncPullBusy) return;
   const now = Date.now();
-  if(opts.fromResume && now - _lastAutoPullAt < 15000) return;
+  // 切标签/切 App：至少间隔 2 分钟，避免频繁打断阅读
+  if(opts.fromResume && now - _lastAutoPullAt < 120000) return;
   _syncPullBusy = true;
   _lastAutoPullAt = now;
   try{
     const r = await cloudSyncPull();
-    if(r && r.ok && ((r.books||0)+(r.conversations||0)+(r.cards||0) > 0)){
-      toast('已从云端同步笔记/聊天');
-      if(typeof router === 'function' && opts.refreshView !== false) router();
+    const merged = r && r.ok && ((r.books||0)+(r.conversations||0)+(r.cards||0) > 0);
+    if(merged){
+      if(opts.silent){
+        // 后台：只更新已打开的聊天列表，不 toast、不 router()
+        if(typeof refreshViewAfterCloudSync === 'function'){
+          await refreshViewAfterCloudSync({ anchor: 'latest-turn' });
+        }
+      }else{
+        toast('已从云端同步笔记/聊天');
+        if(typeof refreshViewAfterCloudSync === 'function'){
+          await refreshViewAfterCloudSync({ anchor: 'latest-turn' });
+        }
+      }
     }
   }catch(e){
-    console.warn('云同步拉取跳过', e.message || e);
+    if(!opts.silent) console.warn('云同步拉取跳过', e.message || e);
   }finally{
     _syncPullBusy = false;
   }
 }
 
 function installCloudSyncLifecycle(){
+  // 仅用 visibilitychange；不用 focus（切标签会过于频繁）
   document.addEventListener('visibilitychange', ()=>{
     if(document.visibilityState === 'visible'){
-      maybeCloudSyncPullOnStart({ fromResume: true });
+      maybeCloudSyncPullOnStart({ fromResume: true, silent: true });
     }
   });
   window.addEventListener('pageshow', (e)=>{
-    if(e.persisted) maybeCloudSyncPullOnStart({ fromResume: true });
-  });
-  window.addEventListener('focus', ()=>{
-    maybeCloudSyncPullOnStart({ fromResume: true });
+    if(e.persisted) maybeCloudSyncPullOnStart({ fromResume: true, silent: true });
   });
 }
 
@@ -194,7 +203,8 @@ async function uiCloudSyncPull(){
   try{
     const r = await cloudSyncPull();
     toast('已合并：书'+r.books+' · 对话'+r.conversations+' · 卡片'+r.cards);
-    if(typeof router === 'function') router();
+    if(typeof refreshViewAfterCloudSync === 'function') await refreshViewAfterCloudSync();
+    else if(typeof router === 'function') router();
   }catch(e){
     toast('拉取失败：'+(e.message||e));
   }finally{ hideBusy(); }
@@ -224,11 +234,8 @@ async function uiCloudSyncNow(){
     if(pulled && pulled.ok) parts.push('已拉取');
     if(pushed && pushed.ok) parts.push('已上传');
     toast(parts.length ? parts.join(' · ') : '同步完成');
-    if(typeof renderSettings === 'function' && location.hash.indexOf('/settings')>=0){
-      renderSettings();
-    } else if(typeof router === 'function'){
-      router();
-    }
+    if(typeof refreshViewAfterCloudSync === 'function') await refreshViewAfterCloudSync();
+    else if(typeof router === 'function') router();
   }catch(e){
     toast('同步失败：'+(e.message||e));
   }finally{ hideBusy(); }
