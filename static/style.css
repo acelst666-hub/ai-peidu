@@ -347,6 +347,9 @@ textarea{min-height:90px;resize:vertical}
 }
 .mark-dot:hover{background:#fde68a;transform:scale(1.08)}
 .mark-dot.has-text{background:#fbbf24;color:#78350f}
+.chat-box .bubble .mark-ul{
+  text-decoration:underline;text-decoration-color:#c4a574;text-decoration-thickness:1.5px;
+}
 
 .mark-ctx{
   position:fixed;z-index:10050;display:none;

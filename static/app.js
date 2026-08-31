@@ -881,6 +881,7 @@ function stripTargetPrefix(text){
 async function renderDiscuss(bid){
   const b=await api('/api/books/'+bid);
   if(b.error){ view().innerHTML='<div class="card">书目不存在</div>'; return; }
+  await loadBookMarks(bid);
   const ctx = b.discussion_context || {text:'',chapter_title:'',updated_at:null};
   const ctxOverridden = pendingContextText != null;
   const initCtx = ctxOverridden ? pendingContextText : (ctx.text||'');
@@ -914,13 +915,16 @@ async function renderDiscuss(bid){
     +   '</div>'
     +   '<div class="discuss-pane discuss-right">'
     +     '<div class="card discuss-chat-card">'
-    +       '<div class="row" style="margin-bottom:10px;align-items:center">'
+    +       '<div class="row" style="margin-bottom:10px;align-items:center;flex-wrap:wrap;gap:8px">'
     +         '<div class="muted" style="font-size:13px">📌 关联章节</div>'
     +         '<select id="d_chapter" style="flex:1;max-width:300px">'+opts+'</select>'
+    +         '<button type="button" class="btn sec sm" id="d_chat_marks">💭 标注</button>'
     +       '</div>'
+    +       '<div class="muted" style="font-size:12px;margin:0 0 6px">对话气泡内选中文字 → 右键可划线/写想法（与阅读器标注同一套）</div>'
     +       '<div id="msgs" class="discuss-box chat-box"></div>'
     +       '<div id="d_status" class="chat-status"></div>'
     +       '<div class="chat-savebar"><label class="selall"><input type="checkbox" id="d_selall"> 全选</label>'
+    +         '<label class="selall"><input type="checkbox" id="d_save_marks"> 含标注</label>'
     +         '<span id="d_selcount" class="muted">已选 0 条</span>'
     +         '<button class="btn sec sm" id="d_save">💾 保存选中为读书笔记</button></div>'
     +       '<div class="muted" style="font-size:12px;margin:2px 0 6px">@马克思 只叫马克思回复；@神鲸 只叫神鲸回复（默认神鲸）</div>'
@@ -941,8 +945,11 @@ async function renderDiscuss(bid){
   $('#d_save').onclick = ()=>saveNotesFrom('d');
   $('#d_selall').onchange = (e)=>{ document.querySelectorAll('.d-msgsel-cb').forEach(cb=>cb.checked=e.target.checked); updateDiscussSelCount(); };
   $('#d_chapter').onchange = async ()=>{ DISCUSS.threadId = discussThreadId(); await loadDiscuss(bid); };
+  const dMarks=$('#d_chat_marks'); if(dMarks) dMarks.onclick = ()=>{ MARK_UI.activeSurface='discuss'; openMarkPanel(); };
+  const dSaveMarks=$('#d_save_marks'); if(dSaveMarks) dSaveMarks.onchange = updateDiscussSelCount;
   renderDiscussReader($('#d_ctx_text').value || '');
   DISCUSS.threadId = discussThreadId();
+  bindChatMarkEvents('#msgs', 'discuss');
   await loadDiscuss(bid);
   if(ctxOverridden){ await saveContext(bid, true); }
 }
@@ -978,17 +985,18 @@ async function loadDiscuss(bid, opts){
     const sel = sp==='me' ? '我的问题' : '回答';
     return '<div class="msg '+cls+'"><div class="msg-top"><span class="who">'+who+'</span>'
       + '<label class="msgsel"><input type="checkbox" class="d-msgsel-cb" data-i="'+i+'"> '+sel+'</label></div>'
-      + '<div class="bubble">'+chatHtml(m.content||'')+'</div></div>';
+      + '<div class="bubble">'+applyMarksToHtml(chatHtml(m.content||''))+'</div></div>';
   }).join('');
-  const mode = (opts && opts.anchor) || 'bottom';
-  requestAnimationFrame(()=>scrollChatAnchor(box, mode));
+  const mode = (opts && opts.anchor === 'preserve') ? null : ((opts && opts.anchor) || 'bottom');
+  if(mode) requestAnimationFrame(()=>scrollChatAnchor(box, mode));
   box.querySelectorAll('.d-msgsel-cb').forEach(cb=>cb.onchange=updateDiscussSelCount);
   updateDiscussSelCount();
 }
 function updateDiscussSelCount(){
   const n=document.querySelectorAll('.d-msgsel-cb:checked').length;
+  const marksOn = !!($('#d_save_marks') && $('#d_save_marks').checked);
   const el=$('#d_selcount'); if(el) el.textContent='已选 '+n+' 条';
-  const save=$('#d_save'); if(save) save.disabled=(n===0);
+  const save=$('#d_save'); if(save) save.disabled=(n===0 && !marksOn);
 }
 async function saveContext(bid, silent){
   const t = $('#d_ctx_text') ? $('#d_ctx_text').value : '';
@@ -1129,26 +1137,28 @@ async function saveNotesFrom(prefix){
   const cls = prefix==='d' ? '.d-msgsel-cb' : '.msgsel-cb';
   const list = prefix==='d' ? DISCUSS.msgs : CHAT_MSGS;
   const sel=[...document.querySelectorAll(cls+':checked')].map(cb=>parseInt(cb.dataset.i));
-  if(!sel.length){ toast('请先勾选要保存的内容'); return; }
+  const marksEl = $('#'+(prefix==='d'?'d_save_marks':'r_save_marks'));
+  const includeMarks = !!(marksEl && marksEl.checked);
+  if(!sel.length && !includeMarks){ toast('请勾选对话内容，或勾选「含标注」'); return; }
   const bid = prefix==='d' ? ((location.hash.match(/^#\/book\/([^/]+)/)||[])[1]) : READER.bid;
-  const b=await api('/api/books/'+bid);
+  if(prefix==='d') MARK_UI.activeSurface = 'discuss';
+  else MARK_UI.activeSurface = 'read-chat';
   const order=sel.slice().sort((a,b)=>a-b);
-  let md='# 读书笔记 · 《'+(b.title||'未命名')+'》\n\n';
-  md+='导出时间：'+new Date().toLocaleString('zh-CN')+'\n\n';
-  md+='---\n\n';
+  const messages = [];
   for(const i of order){
     const m=list[i]; if(!m) continue;
     const sp=m.speaker || (m.role==='user'?'me':'shenjing');
     const who = sp==='me' ? '我（问题）' : sp==='marx' ? '马克思' : '神鲸';
-    md+='## '+who+'\n\n'+(m.content||'')+'\n\n';
+    messages.push({who, content: m.content||''});
   }
-  md+='---\n_由 AI 陪读导出_';
-  const blob=new Blob([md], {type:'text/markdown;charset=utf-8'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='读书笔记-'+ (b.title||'笔记') +'-'+ dateStr() +'.md';
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(a.href);
+  const marks = includeMarks ? thoughtMarks().filter(m => (m.quote||'').trim()) : [];
+  const md = await buildReadingNotesMd({
+    bid,
+    contextLabel: markContextLabel(),
+    messages,
+    marks,
+  });
+  downloadMarkdown(md, '读书笔记-'+(await bookTitle(bid))+'-'+dateStr());
   toast('已保存读书笔记到本地');
 }
 async function clearDiscuss(bid){
@@ -1962,32 +1972,71 @@ function readCtx(b, term, mode){
 }
 let READER = {bid:null, mode:null, term:null, pages:[], idx:0, threadId:'', marks:[], chatHistLoaded:false};
 let CHAT_MSGS = [];
+let MARK_BOOK = { bid: null, marks: [] };
 let MARK_UI = {
   pendingQuote:'', pendingRect:null, openTagId:null,
   panelView:'list', detailId:null, selectedIds:new Set(), collapsing:false,
+  activeSurface: null,
 };
+
+function markSurface(){
+  const hash = location.hash || '';
+  if(hash.includes('/discuss')) return 'discuss';
+  if(hash.includes('/read/')) return 'read';
+  return 'reader';
+}
+function markContextKey(){
+  const surf = MARK_UI.activeSurface || markSurface();
+  if(surf === 'discuss') return discussThreadId();
+  if(surf === 'read-chat' || surf === 'read') return readThreadId();
+  return chapterKey();
+}
+function markPanelTitle(){
+  const s = markSurface();
+  if(s === 'discuss') return '本讨论标注';
+  if(s === 'read') return '本对话标注';
+  return '本章标注';
+}
+function activeMarkBid(){
+  if(MARK_BOOK.bid) return MARK_BOOK.bid;
+  if(READER.bid) return READER.bid;
+  const m = (location.hash || '').match(/^#\/book\/([^/]+)/);
+  return m ? m[1] : null;
+}
+async function loadBookMarks(bid){
+  if(!bid) return;
+  const b = await api('/api/books/'+bid);
+  MARK_BOOK = { bid, marks: Array.isArray(b.reader_marks) ? b.reader_marks : [] };
+  if(READER.bid === bid) READER.marks = MARK_BOOK.marks;
+}
+function bookMarks(){ return MARK_BOOK.marks || READER.marks || []; }
 
 function markUid(){
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 function chapterKey(){ return READER.term || ''; }
-function chapterMarks(){
-  const ch = chapterKey();
-  return (READER.marks || []).filter(m => (m.chapter || '') === ch);
+function contextMarks(){
+  const ch = markContextKey();
+  return bookMarks().filter(m => (m.chapter || '') === ch);
 }
+function chapterMarks(){ return contextMarks(); }
 function thoughtMarks(){
-  return chapterMarks().filter(m => m.has_thought);
+  return contextMarks().filter(m => m.has_thought);
 }
 async function refreshReaderMarks(){
   if(!READER.bid){ READER.marks = []; return; }
-  const b = await api('/api/books/'+READER.bid);
-  READER.marks = Array.isArray(b.reader_marks) ? b.reader_marks : [];
+  await loadBookMarks(READER.bid);
 }
-async function persistReaderMarks(){
-  if(!READER.bid) return;
-  await api('/api/books/'+READER.bid, 'PUT', {reader_marks: READER.marks || []});
+async function persistBookMarks(){
+  const bid = activeMarkBid();
+  if(!bid) return;
+  const marks = bookMarks();
+  await api('/api/books/'+bid, 'PUT', {reader_marks: marks});
+  MARK_BOOK.marks = marks;
+  if(READER.bid === bid) READER.marks = marks;
   if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
 }
+async function persistReaderMarks(){ return persistBookMarks(); }
 function quoteHtmlNeedle(quote){
   return esc(quote || '').replace(/\r\n/g, '\n').replace(/\n/g, '<br>');
 }
@@ -2090,13 +2139,30 @@ function showMarkCtx(x, y){
   ctx.style.left = left + 'px';
   ctx.style.top = top + 'px';
 }
-function getReaderSelectionQuote(){
-  const box = $('#r_reader');
+function getSelectionQuoteIn(container){
   const sel = window.getSelection();
-  if(!sel || sel.isCollapsed || !sel.rangeCount || !box) return '';
+  if(!sel || sel.isCollapsed || !sel.rangeCount || !container) return '';
   const a = sel.anchorNode, f = sel.focusNode;
-  if(!a || !f || !box.contains(a) || !box.contains(f)) return '';
+  if(!a || !f || !container.contains(a) || !container.contains(f)) return '';
   return String(sel.toString() || '').replace(/\r\n/g, '\n').trim();
+}
+function getReaderSelectionQuote(){
+  return getSelectionQuoteIn($('#r_reader'));
+}
+async function refreshMarkViews(opts){
+  opts = opts || {};
+  const surf = markSurface();
+  if(surf === 'discuss'){
+    const m = (location.hash || '').match(/^#\/book\/([^/]+)\/discuss/);
+    if(m) await loadDiscuss(m[1], { anchor: opts.anchor || 'preserve' });
+    return;
+  }
+  if(surf === 'read'){
+    if(READER.bid && READER.chatHistLoaded) await loadReadChat(READER.bid, { anchor: opts.anchor || 'preserve' });
+    renderReaderPage();
+    return;
+  }
+  renderReaderPage();
 }
 function bindReaderMarkEvents(){
   ensureMarkChrome();
@@ -2104,6 +2170,7 @@ function bindReaderMarkEvents(){
   if(!box || box._markBound) return;
   box._markBound = true;
   box.addEventListener('contextmenu', e => {
+    MARK_UI.activeSurface = 'reader';
     const quote = getReaderSelectionQuote();
     if(!quote){ hideMarkCtx(); return; }
     e.preventDefault();
@@ -2122,14 +2189,47 @@ function bindReaderMarkEvents(){
     if(dot){
       e.preventDefault();
       e.stopPropagation();
+      MARK_UI.activeSurface = 'reader';
       openMarkThought(dot.getAttribute('data-mid'), dot);
       return;
     }
   });
 }
+function bindChatMarkEvents(rootSel, surface){
+  const box = rootSel ? document.querySelector(rootSel) : null;
+  if(!box || box._chatMarkBound) return;
+  box._chatMarkBound = true;
+  box.addEventListener('contextmenu', e => {
+    const bubble = e.target.closest('.bubble');
+    if(!bubble || !box.contains(bubble)) return;
+    const quote = getSelectionQuoteIn(bubble);
+    if(!quote){ hideMarkCtx(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    MARK_UI.activeSurface = surface;
+    MARK_UI.pendingQuote = quote;
+    try{
+      const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
+      MARK_UI.pendingRect = r;
+      showMarkCtx(r.left + r.width / 2, r.top);
+    }catch(_){
+      showMarkCtx(e.clientX, e.clientY);
+    }
+  });
+  box.addEventListener('click', e => {
+    const dot = e.target.closest('.mark-dot');
+    if(dot){
+      e.preventDefault();
+      e.stopPropagation();
+      MARK_UI.activeSurface = surface;
+      openMarkThought(dot.getAttribute('data-mid'), dot);
+    }
+  });
+}
 async function runMarkAction(act){
   const quote = MARK_UI.pendingQuote;
-  const box = $('#r_reader');
+  const surf = MARK_UI.activeSurface || markSurface();
+  const box = surf === 'reader' ? $('#r_reader') : null;
   const keepY = box ? box.scrollTop : 0;
   hideMarkCtx();
   if(!quote){ toast('请先选中文字'); return; }
@@ -2148,7 +2248,6 @@ async function runMarkAction(act){
       try{ document.execCommand('copy'); toast('已复制'); }catch(e){ toast('复制失败'); }
       ta.remove();
     }
-    // 防止复制/失焦导致阅读器被浏览器拽回顶部
     const restore = () => { if(box) box.scrollTop = keepY; };
     restore();
     requestAnimationFrame(restore);
@@ -2158,37 +2257,41 @@ async function runMarkAction(act){
   }
   if(act === 'uline'){
     upsertMark({quote, underline:true});
-    await persistReaderMarks();
-    renderReaderPage(); // 默认保持滚动
+    await persistBookMarks();
+    await refreshMarkViews();
     if(box) box.scrollTop = keepY;
     toast('已划线');
     return;
   }
   if(act === 'thought'){
     const m = upsertMark({quote, has_thought:true, thought:''});
-    await persistReaderMarks();
-    renderReaderPage();
+    await persistBookMarks();
+    await refreshMarkViews();
     if(box) box.scrollTop = keepY;
     requestAnimationFrame(() => openMarkThought(m.id));
   }
 }
 function upsertMark(partial){
-  if(!READER.marks) READER.marks = [];
+  if(!MARK_BOOK.marks) MARK_BOOK.marks = [];
   const quote = partial.quote;
-  let m = chapterMarks().find(x => x.quote === quote && x.page_idx === READER.idx)
-    || chapterMarks().find(x => x.quote === quote);
+  const ctx = markContextKey();
+  const surf = MARK_UI.activeSurface || markSurface();
+  let m = contextMarks().find(x => x.quote === quote && (surf !== 'reader' || x.page_idx === READER.idx))
+    || contextMarks().find(x => x.quote === quote);
   if(!m){
     m = {
       id: markUid(),
-      chapter: chapterKey(),
-      page_idx: READER.idx,
+      chapter: ctx,
+      page_idx: surf === 'reader' ? READER.idx : undefined,
       quote,
       underline: false,
       has_thought: false,
       thought: '',
+      source: surf === 'discuss' ? 'discuss-chat' : (surf === 'read' || surf === 'read-chat' ? 'read-chat' : 'reader'),
       created_at: new Date().toISOString(),
     };
-    READER.marks.push(m);
+    MARK_BOOK.marks.push(m);
+    if(READER.bid === MARK_BOOK.bid) READER.marks = MARK_BOOK.marks;
   }
   if(partial.underline) m.underline = true;
   if(partial.has_thought){
@@ -2199,7 +2302,7 @@ function upsertMark(partial){
   return m;
 }
 function findMark(id){
-  return (READER.marks || []).find(m => m.id === id);
+  return bookMarks().find(m => m.id === id);
 }
 function openMarkThought(id, anchorEl){
   ensureMarkChrome();
@@ -2238,7 +2341,6 @@ async function collapseMarkTag(){
   const box = $('#r_reader');
   const keepY = box ? box.scrollTop : 0;
   const thought = ($('#mt_text') && $('#mt_text').value) || '';
-  // 立刻收起，不等待落盘
   if(tag) tag.classList.remove('show');
   MARK_UI.openTagId = null;
   try{
@@ -2246,8 +2348,8 @@ async function collapseMarkTag(){
       const m = findMark(id);
       if(m){
         m.thought = thought;
-        await persistReaderMarks();
-        renderReaderPage();
+        await persistBookMarks();
+        await refreshMarkViews();
         if(box) box.scrollTop = keepY;
       }
     }
@@ -2265,7 +2367,7 @@ async function commitMarkThought(minimize){
   const m = findMark(id);
   if(m){
     m.thought = ($('#mt_text') && $('#mt_text').value) || '';
-    await persistReaderMarks();
+    await persistBookMarks();
   }
 }
 function setMarkPanelHead(view){
@@ -2273,7 +2375,7 @@ function setMarkPanelHead(view){
   const title = $('#mark-panel-title');
   const foot = $('#mark-panel-foot');
   if(head) head.classList.toggle('detail', view === 'detail');
-  if(title) title.textContent = view === 'detail' ? '标签详情' : '本章标签';
+  if(title) title.textContent = view === 'detail' ? '标注详情' : markPanelTitle();
   if(foot) foot.style.display = view === 'detail' ? 'none' : '';
 }
 function syncSelectedFromDom(){
@@ -2290,7 +2392,7 @@ function renderMarkPanelList(){
   setMarkPanelHead('list');
   const list = thoughtMarks().slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   if(!list.length){
-    box.innerHTML = '<div class="mark-panel-empty">本章还没有想法标签。<br>在原文中选中文字 → 右键 → 写想法</div>';
+    box.innerHTML = '<div class="mark-panel-empty">当前还没有想法标注。<br>在原文或对话气泡中选中文字 → 右键 → 写想法</div>';
     updateMarkExportBtn();
     return;
   }
@@ -2298,12 +2400,13 @@ function renderMarkPanelList(){
     const preview = (m.quote || '').replace(/\s+/g, ' ').slice(0, 20);
     const more = (m.quote || '').replace(/\s+/g, ' ').length > 20 ? '…' : '';
     const tip = (m.thought || '').trim() ? '已写想法' : '想法为空';
+    const loc = (m.source === 'discuss-chat' || m.source === 'read-chat') ? '对话' : '第 '+((m.page_idx||0)+1)+' 页';
     const checked = MARK_UI.selectedIds.has(m.id) ? ' checked' : '';
     const sel = MARK_UI.selectedIds.has(m.id) ? ' selected' : '';
     return '<div class="mark-panel-item'+sel+'" data-mid="'+esc(m.id)+'">'
       + '<input type="checkbox" class="mpi-cb" value="'+esc(m.id)+'"'+checked+'>'
       + '<div class="mpi-body"><div class="mpi-quote">'+esc(preview + more)+'</div>'
-      + '<div class="mpi-meta">'+tip+' · 第 '+((m.page_idx||0)+1)+' 页</div></div></div>';
+      + '<div class="mpi-meta">'+tip+' · '+loc+'</div></div></div>';
   }).join('');
   box.querySelectorAll('.mpi-cb').forEach(cb => {
     cb.addEventListener('click', e => e.stopPropagation());
@@ -2333,9 +2436,10 @@ function showMarkPanelDetail(id){
   MARK_UI.detailId = id;
   setMarkPanelHead('detail');
   const tip = (m.thought || '').trim() ? '已写想法' : '想法为空';
+  const loc = (m.source === 'discuss-chat' || m.source === 'read-chat') ? '对话' : '第 '+((m.page_idx||0)+1)+' 页';
   box.innerHTML =
     '<div class="mark-panel-detail">'
-    + '<div class="mpd-meta">'+tip+' · 第 '+((m.page_idx||0)+1)+' 页</div>'
+    + '<div class="mpd-meta">'+tip+' · '+loc+'</div>'
     + '<div class="mpd-label">原文</div>'
     + '<div class="mpd-quote">'+esc(m.quote || '')+'</div>'
     + '<div class="mpd-label">想法</div>'
@@ -2363,7 +2467,7 @@ async function backMarkPanelList(){
       const next = $('#mpd_thought').value || '';
       if(next !== (m.thought || '')){
         m.thought = next;
-        try{ await persistReaderMarks(); }catch(_){}
+        try{ await persistBookMarks(); }catch(_){}
       }
     }
   }
@@ -2373,7 +2477,7 @@ function closeMarkPanel(){
   if(MARK_UI.panelView === 'detail' && $('#mpd_thought') && MARK_UI.detailId){
     const m = findMark(MARK_UI.detailId);
     if(m) m.thought = $('#mpd_thought').value || '';
-    persistReaderMarks().catch(()=>{});
+    persistBookMarks().catch(()=>{});
   }
   MARK_UI.panelView = 'list';
   MARK_UI.detailId = null;
@@ -2386,6 +2490,7 @@ function openMarkPanel(){
   ensureMarkChrome();
   hideMarkCtx();
   collapseMarkTag();
+  if(!MARK_UI.activeSurface) MARK_UI.activeSurface = markSurface() === 'read' ? 'read-chat' : markSurface();
   MARK_UI.selectedIds = new Set();
   renderMarkPanelList();
   $('#mark-panel-backdrop').classList.add('show');
@@ -2399,32 +2504,67 @@ function updateMarkExportBtn(){
 async function exportMarkNotes(){
   syncSelectedFromDom();
   const ids = [...(MARK_UI.selectedIds || [])];
-  if(!ids.length){ toast('请先勾选标签'); return; }
+  if(!ids.length){ toast('请先勾选标注'); return; }
   const marks = thoughtMarks().filter(m => ids.includes(m.id));
-  // 保持勾选顺序
   marks.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
-  const b = await api('/api/books/'+READER.bid);
-  let md = '# 读书笔记 · 标记摘录（与对话笔记分册）\n\n';
-  md += '书目：《'+(b.title || '未命名')+'》\n';
-  md += '章节：'+(READER.term || '')+'\n';
-  md += '导出时间：'+new Date().toLocaleString('zh-CN')+'\n\n';
-  md += '> 本文件由「查看标签 → 生成读书笔记」导出，与对话框勾选生成的读书笔记相互独立。\n\n';
-  md += '---\n\n';
-  marks.forEach((m, i) => {
-    md += '## 页面'+(i+1)+'\n\n';
-    md += '### 原文\n\n'+(m.quote || '')+'\n\n';
-    md += '### 想法\n\n'+((m.thought || '').trim() || '（未填写）')+'\n\n';
-    md += '---\n\n';
+  const bid = activeMarkBid();
+  if(!bid){ toast('无法确定书目'); return; }
+  const md = await buildReadingNotesMd({
+    bid,
+    contextLabel: markContextLabel(),
+    messages: [],
+    marks,
   });
-  md += '_由 AI 陪读 · 标记摘录导出_';
+  downloadMarkdown(md, '读书笔记-标注-'+(await bookTitle(bid))+'-'+dateStr());
+  toast('已生成标注读书笔记（'+marks.length+' 条）');
+  closeMarkPanel();
+}
+function markContextLabel(){
+  const s = markSurface();
+  if(s === 'discuss') return '讨论章节：'+(($('#d_chapter')&&$('#d_chapter').value)||'未指定');
+  if(s === 'read') return '阅读对话：'+(READER.term||'');
+  return '阅读章节：'+(READER.term||'');
+}
+async function bookTitle(bid){
+  const b = await api('/api/books/'+bid);
+  return b.title || '笔记';
+}
+async function buildReadingNotesMd(opts){
+  const bid = opts.bid;
+  const b = await api('/api/books/'+bid);
+  let md = '# 读书笔记 · 《'+(b.title||'未命名')+'》\n\n';
+  md += '导出时间：'+new Date().toLocaleString('zh-CN')+'\n';
+  if(opts.contextLabel) md += opts.contextLabel+'\n';
+  md += '\n---\n\n';
+  const msgs = opts.messages || [];
+  if(msgs.length){
+    md += '## 对话摘录\n\n';
+    for(const item of msgs){
+      md += '### '+item.who+'\n\n'+(item.content||'')+'\n\n';
+    }
+    md += '---\n\n';
+  }
+  const marks = opts.marks || [];
+  if(marks.length){
+    md += '## 标注与想法\n\n';
+    marks.forEach((m, i) => {
+      md += '### 标注 '+(i+1)+'\n\n';
+      md += '**原文：**\n\n'+(m.quote||'')+'\n\n';
+      const th = (m.thought||'').trim();
+      if(th) md += '**想法：**\n\n'+th+'\n\n';
+      md += '---\n\n';
+    });
+  }
+  md += '_由 AI 陪读导出_';
+  return md;
+}
+function downloadMarkdown(md, filename){
   const blob = new Blob([md], {type:'text/markdown;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = '读书笔记-标记-'+(b.title || '笔记')+'-'+dateStr()+'.md';
+  a.download = filename.endsWith('.md') ? filename : filename+'.md';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(a.href);
-  toast('已生成标记读书笔记（'+marks.length+' 页）');
-  closeMarkPanel();
 }
 
 // 点击页面空白：收起右键菜单 / 最小化想法 tag（不关标签列表——列表有独立遮罩）
@@ -2559,6 +2699,7 @@ async function renderRead(bid, mode, key){
     }
   }
   READER.marks = Array.isArray(b.reader_marks) ? b.reader_marks : [];
+  MARK_BOOK = { bid, marks: READER.marks };
   let h='<div class="row" style="justify-content:space-between;align-items:flex-end"><h1>'+esc(title)+'</h1>'
     + '<div class="row"><button class="btn ghost sm" onclick="location.hash=\'#/book/'+bid+'\'">‹ 目录</button>'
     + '<button class="btn sec sm" id="r_gen">✨ 生成知识卡片</button></div></div>';
@@ -2573,12 +2714,14 @@ async function renderRead(bid, mode, key){
     + '</div></div>';
   h+='<div class="read-pane"><div class="card discuss-chat-card">'
     + '<div class="chat-head"><div class="muted" style="font-size:13px">💬 聊天室</div>'
-    + '<select id="r_chapter" style="flex:1;max-width:240px">'+chapterOpts(b, title)+'</select></div>'
-    + '<div class="muted" style="font-size:12px;margin:0 0 8px">@马克思 只叫马克思回复；@神鲸 只叫神鲸回复（默认神鲸）</div>'
+    + '<select id="r_chapter" style="flex:1;max-width:240px">'+chapterOpts(b, title)+'</select>'
+    + '<button type="button" class="btn sec sm" id="r_chat_marks">💭 标注</button></div>'
+    + '<div class="muted" style="font-size:12px;margin:0 0 8px">@马克思 只叫马克思回复；@神鲸 只叫神鲸回复（默认神鲸）。气泡内选中 → 右键写想法。</div>'
     + '<div id="r_qs" class="starter-host"></div>'
     + '<div id="r_msgs" class="discuss-box chat-box"></div>'
     + '<div id="r_status" class="chat-status"></div>'
     + '<div class="chat-savebar"><label class="selall"><input type="checkbox" id="r_selall"> 全选</label>'
+    + '<label class="selall"><input type="checkbox" id="r_save_marks"> 含标注</label>'
     + '<span id="r_selcount" class="muted">已选 0 条</span>'
     + '<div class="row" style="gap:8px"><button class="btn ghost sm" id="r_load_hist">加载本章历史</button><button class="btn sec sm" id="r_save">💾 保存选中为读书笔记</button></div></div>'
     + '<div class="row" style="align-items:flex-end;margin-top:8px"><textarea id="r_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-height:60px"></textarea>'
@@ -2590,15 +2733,18 @@ async function renderRead(bid, mode, key){
   const prev=$('#r_prev'); if(prev) prev.onclick = readerPrev;
   const next=$('#r_next'); if(next) next.onclick = readerNext;
   const gen2=$('#r_gen2'); if(gen2) gen2.onclick = ()=>genReadCard(READER.bid, READER.term, READER.mode);
-  const marksBtn=$('#r_marks'); if(marksBtn) marksBtn.onclick = ()=>openMarkPanel();
+  const marksBtn=$('#r_marks'); if(marksBtn) marksBtn.onclick = ()=>{ MARK_UI.activeSurface='reader'; openMarkPanel(); };
+  const chatMarksBtn=$('#r_chat_marks'); if(chatMarksBtn) chatMarksBtn.onclick = ()=>{ MARK_UI.activeSurface='read-chat'; openMarkPanel(); };
   const send=$('#r_send'); if(send) send.onclick = ()=>sendReadChat(READER.bid, READER.term, READER.mode);
   const save=$('#r_save'); if(save) save.onclick = saveNotes;
   const loadHist=$('#r_load_hist'); if(loadHist) loadHist.onclick = ()=>loadReadChat(bid);
+  const rSaveMarks=$('#r_save_marks'); if(rSaveMarks) rSaveMarks.onchange = updateSelCount;
   const selall=$('#r_selall'); if(selall) selall.onchange = (e)=>{ document.querySelectorAll('.msgsel-cb').forEach(cb=>cb.checked=e.target.checked); updateSelCount(); };
   const ch=$('#r_chapter'); if(ch) ch.onchange = async ()=>{ READER.threadId = readThreadId(); renderStarterQuestions(); clearReadChatPanel(); };
   const input=$('#r_input'); if(input) input.addEventListener('keydown', e=>{
     if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendReadChat(READER.bid, READER.term, READER.mode); }
   });
+  bindChatMarkEvents('#r_msgs', 'read-chat');
   READER.threadId = readThreadId();
   renderStarterQuestions();
   clearReadChatPanel();
@@ -2626,17 +2772,18 @@ async function loadReadChat(bid, opts){
     const sel = sp==='me' ? '我的问题' : '回答';
     return '<div class="msg '+cls+'"><div class="msg-top"><span class="who">'+who+'</span>'
       + '<label class="msgsel"><input type="checkbox" class="msgsel-cb" data-i="'+i+'"> '+sel+'</label></div>'
-      + '<div class="bubble">'+chatHtml(m.content||'')+'</div></div>';
+      + '<div class="bubble">'+applyMarksToHtml(chatHtml(m.content||''))+'</div></div>';
   }).join('');
-  const mode = (opts && opts.anchor) || 'bottom';
-  requestAnimationFrame(()=>scrollChatAnchor(box, mode));
+  const mode = (opts && opts.anchor === 'preserve') ? null : ((opts && opts.anchor) || 'bottom');
+  if(mode) requestAnimationFrame(()=>scrollChatAnchor(box, mode));
   box.querySelectorAll('.msgsel-cb').forEach(cb=>cb.onchange=updateSelCount);
   updateSelCount();
 }
 function updateSelCount(){
   const n=document.querySelectorAll('.msgsel-cb:checked').length;
+  const marksOn = !!($('#r_save_marks') && $('#r_save_marks').checked);
   const el=$('#r_selcount'); if(el) el.textContent='已选 '+n+' 条';
-  const save=$('#r_save'); if(save) save.disabled=(n===0);
+  const save=$('#r_save'); if(save) save.disabled=(n===0 && !marksOn);
 }
 function starterQuestions(term){
   const t = term||'当前章节';
@@ -2755,25 +2902,25 @@ async function saveReadReplySingle(bid, target){
 function dateStr(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
 async function saveNotes(){
   const sel=[...document.querySelectorAll('.msgsel-cb:checked')].map(cb=>parseInt(cb.dataset.i));
-  if(!sel.length){ toast('请先勾选要保存的内容'); return; }
-  const b=await api('/api/books/'+READER.bid);
+  const includeMarks = !!($('#r_save_marks') && $('#r_save_marks').checked);
+  if(!sel.length && !includeMarks){ toast('请勾选对话内容，或勾选「含标注」'); return; }
+  MARK_UI.activeSurface = 'read-chat';
   const order=sel.slice().sort((a,b)=>a-b);
-  let md='# 读书笔记 · 《'+(b.title||'未命名')+'》\n\n';
-  md+='导出时间：'+new Date().toLocaleString('zh-CN')+'\n\n';
-  md+='---\n\n';
+  const messages = [];
   for(const i of order){
     const m=CHAT_MSGS[i]; if(!m) continue;
     const sp=m.speaker || (m.role==='user'?'me':'shenjing');
     const who = sp==='me' ? '我（问题）' : sp==='marx' ? '马克思' : '神鲸';
-    md+='## '+who+'\n\n'+(m.content||'')+'\n\n';
+    messages.push({who, content: m.content||''});
   }
-  md+='---\n_由 AI 陪读导出_';
-  const blob=new Blob([md], {type:'text/markdown;charset=utf-8'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='读书笔记-'+ (b.title||'笔记') +'-'+ dateStr() +'.md';
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(a.href);
+  const marks = includeMarks ? thoughtMarks().filter(m => (m.quote||'').trim()) : [];
+  const md = await buildReadingNotesMd({
+    bid: READER.bid,
+    contextLabel: markContextLabel(),
+    messages,
+    marks,
+  });
+  downloadMarkdown(md, '读书笔记-'+(await bookTitle(READER.bid))+'-'+dateStr());
   toast('已保存读书笔记到本地');
 }
 function showBusy(txt){
