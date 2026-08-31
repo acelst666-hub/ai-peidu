@@ -1133,7 +1133,25 @@ async function genDiscussCard(bid){
   if(!r.fields){ toast('生成结果无法解析为卡片'); return; }
   openCardForm(bid,'',r.fields,chTitle);
 }
-async function saveNotesFrom(prefix){
+function collectMarksForExport(surfaceHint){
+  const marks = bookMarks();
+  if(surfaceHint === 'discuss'){
+    return marks.filter(m => m.has_thought && m.chapter === discussThreadId() && (m.quote||'').trim());
+  }
+  if(surfaceHint === 'read-chat' || markSurface() === 'read'){
+    const rid = readThreadId();
+    const ck = chapterKey();
+    const seen = new Set();
+    return marks.filter(m => {
+      if(!m.has_thought || !(m.quote||'').trim()) return false;
+      if(m.chapter !== rid && m.chapter !== ck) return false;
+      if(seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+  }
+  return thoughtMarks().filter(m => (m.quote||'').trim());
+}
   const cls = prefix==='d' ? '.d-msgsel-cb' : '.msgsel-cb';
   const list = prefix==='d' ? DISCUSS.msgs : CHAT_MSGS;
   const sel=[...document.querySelectorAll(cls+':checked')].map(cb=>parseInt(cb.dataset.i));
@@ -1151,17 +1169,7 @@ async function saveNotesFrom(prefix){
     const who = sp==='me' ? '我（问题）' : sp==='marx' ? '马克思' : '神鲸';
     messages.push({who, content: m.content||''});
   }
-  const marks = includeMarks ? thoughtMarks().filter(m => (m.quote||'').trim()) : [];
-  const md = await buildReadingNotesMd({
-    bid,
-    contextLabel: markContextLabel(),
-    messages,
-    marks,
-  });
-  downloadMarkdown(md, '读书笔记-'+(await bookTitle(bid))+'-'+dateStr());
-  toast('已保存读书笔记到本地');
-}
-async function clearDiscuss(bid){
+  const marks = includeMarks ? collectMarksForExport(prefix==='d' ? 'discuss' : 'read-chat') : [];
   if(!confirm('清空当前章节聊天内容？')) return;
   const all = await api('/api/books/'+bid+'/messages');
   const tid = DISCUSS.threadId || discussThreadId();
