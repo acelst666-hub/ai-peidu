@@ -2870,7 +2870,7 @@ async function renderRead(bid, mode, key){
     + '</div></div></div>';
   view().innerHTML=h;
   ensureMarkChrome();
-  renderReaderPage({resetScroll:true});
+  renderReaderPage({restoreScroll:true});
   const prev=$('#r_prev'); if(prev) prev.onclick = readerPrev;
   const next=$('#r_next'); if(next) next.onclick = readerNext;
   const gen2=$('#r_gen2'); if(gen2) gen2.onclick = ()=>genReadCard(READER.bid, READER.term, READER.mode);
