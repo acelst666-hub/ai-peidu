@@ -2034,12 +2034,15 @@ function readResumeHash(r){
 }
 function saveReadResume(){
   if(!READER.bid || !READER.term) return;
+  const box = $('#r_reader');
+  const scrollTop = box ? box.scrollTop : 0;
   try{
     localStorage.setItem(READ_RESUME_KEY, JSON.stringify({
       bid: READER.bid,
       mode: READER.mode || 'chapter',
       term: READER.term,
       pageIdx: READER.idx || 0,
+      scrollTop: scrollTop,
       updatedAt: new Date().toISOString(),
     }));
   }catch(_){}
@@ -2053,6 +2056,24 @@ function restoreReadPageIdx(bid, mode, term){
   if(!saved || saved.bid !== bid || saved.mode !== mode || saved.term !== term) return 0;
   const idx = parseInt(saved.pageIdx, 10);
   return Number.isFinite(idx) && idx >= 0 ? idx : 0;
+}
+function restoreReadScrollTop(bid, mode, term, pageIdx){
+  const saved = getReadResume();
+  if(!saved || saved.bid !== bid || saved.mode !== mode || saved.term !== term) return 0;
+  const idx = parseInt(saved.pageIdx, 10);
+  if(idx !== pageIdx) return 0;
+  const y = parseInt(saved.scrollTop, 10);
+  return Number.isFinite(y) && y >= 0 ? y : 0;
+}
+function bindReaderScrollResume(){
+  const box = $('#r_reader');
+  if(!box || box._resumeScrollBound) return;
+  box._resumeScrollBound = true;
+  let timer = null;
+  box.addEventListener('scroll', ()=>{
+    if(timer) clearTimeout(timer);
+    timer = setTimeout(()=> saveReadResume(), 200);
+  }, {passive:true});
 }
 function maybeAutoRestoreReading(){
   if(!isHomeHash()) return;
@@ -2701,6 +2722,7 @@ function renderReaderPage(opts){
   const box = $('#r_reader');
   if(!box) return;
   const resetScroll = !!(opts && opts.resetScroll);
+  const restoreScroll = !!(opts && opts.restoreScroll);
   const y = box.scrollTop;
   const page = READER.pages[READER.idx] || '';
   const rawHtml = (typeof page === 'string') ? page : page.join('<br>');
@@ -2710,10 +2732,15 @@ function renderReaderPage(opts){
   const prev = $('#r_prev'), next = $('#r_next');
   if(prev) prev.disabled = READER.idx<=0;
   if(next) next.disabled = READER.idx>=READER.pages.length-1;
-  // 仅翻页/初次进入回顶；划线、想法、复制后重绘须保持阅读位置
   if(resetScroll) scrollPaneTop(box);
+  else if(restoreScroll){
+    const target = restoreReadScrollTop(READER.bid, READER.mode, READER.term, READER.idx);
+    const apply = ()=>{ box.scrollTop = target; };
+    requestAnimationFrame(()=>{ apply(); requestAnimationFrame(apply); });
+  }
   else box.scrollTop = y;
   bindReaderMarkEvents();
+  bindReaderScrollResume();
 }
 function readerPrev(){
   if(READER.idx>0){

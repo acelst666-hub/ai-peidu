@@ -1,5 +1,5 @@
 'use strict';
-const CACHE = 'ai-reader-pwa-v11';
+const CACHE = 'ai-reader-pwa-v12';
 
 function swUrl(path){
   // 相对当前 sw 所在目录，兼容 GitHub Pages 子路径
