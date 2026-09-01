@@ -169,7 +169,10 @@ let pendingNewCard = null;
 let pendingChapter = null;
 // 从阅读全文/文库导入时，带入讨论室的原文
 let pendingContextText = null;
-window.addEventListener('hashchange', router);
+window.addEventListener('hashchange', ()=>{
+  persistReadResumeIfReading();
+  router();
+});
 window.addEventListener('DOMContentLoaded', async ()=>{
   await detectApiMode();
   if(API_MODE === 'local'){
@@ -197,6 +200,8 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   }catch(_){}
   await maybeCloudSyncPullOnStart({ silent: true });
   installCloudSyncLifecycle();
+  installReadResumeLifecycle();
+  maybeAutoRestoreReading();
   router();
 });
 
@@ -247,7 +252,19 @@ let shelfSelected = new Set();
 
 async function renderBooks(){
   const books = await api('/api/books');
+  const resume = getReadResume();
   let h = '<h1>书架</h1>';
+  if(resume && resume.bid){
+    const rb = books.find(x => x.id === resume.bid);
+    const title = rb ? rb.title : '上次阅读的书';
+    const pageNo = (parseInt(resume.pageIdx, 10) || 0) + 1;
+    h += '<div class="card read-resume-card" style="margin-bottom:16px;border:2px solid #fecaca;background:var(--soft)">'
+      + '<div style="font-weight:700;margin-bottom:4px">📖 继续阅读</div>'
+      + '<div style="font-size:15px;margin-bottom:4px">《'+esc(title)+'》</div>'
+      + '<div class="muted">'+esc(resume.term || '')+' · 第 '+pageNo+' 页</div>'
+      + '<button class="btn" type="button" style="margin-top:10px" onclick="continueLastReading()">继续阅读</button>'
+      + '</div>';
+  }
   h += '<div class="row" style="margin-bottom:18px;gap:8px">'
     + '<button class="btn" onclick="showBootstrapBook()">＋ 新建书目（初始化）</button>'
     + '<button class="btn ghost sm" id="shelf_sel_btn" onclick="toggleShelfSelect()">'
@@ -1152,6 +1169,7 @@ function collectMarksForExport(surfaceHint){
   }
   return thoughtMarks().filter(m => (m.quote||'').trim());
 }
+async function saveNotesFrom(prefix){
   const cls = prefix==='d' ? '.d-msgsel-cb' : '.msgsel-cb';
   const list = prefix==='d' ? DISCUSS.msgs : CHAT_MSGS;
   const sel=[...document.querySelectorAll(cls+':checked')].map(cb=>parseInt(cb.dataset.i));
@@ -1170,6 +1188,16 @@ function collectMarksForExport(surfaceHint){
     messages.push({who, content: m.content||''});
   }
   const marks = includeMarks ? collectMarksForExport(prefix==='d' ? 'discuss' : 'read-chat') : [];
+  const md = await buildReadingNotesMd({
+    bid,
+    contextLabel: markContextLabel(),
+    messages,
+    marks,
+  });
+  downloadMarkdown(md, '读书笔记-'+(await bookTitle(bid))+'-'+dateStr());
+  toast('已保存读书笔记到本地');
+}
+async function clearDiscuss(bid){
   if(!confirm('清空当前章节聊天内容？')) return;
   const all = await api('/api/books/'+bid+'/messages');
   const tid = DISCUSS.threadId || discussThreadId();
@@ -1979,6 +2007,70 @@ function readCtx(b, term, mode){
   return findPassages(b.raw_text||'', term).slice(0,6).join('\n\n').slice(0,6000);
 }
 let READER = {bid:null, mode:null, term:null, pages:[], idx:0, threadId:'', marks:[], chatHistLoaded:false};
+
+const READ_RESUME_KEY = 'ai-reader-read-resume';
+
+function isHomeHash(){
+  const path = (location.hash.slice(1) || '/').split('?')[0];
+  return path === '/' || path === '';
+}
+function isOnReadRoute(){
+  const path = (location.hash.slice(1) || '/').split('?')[0];
+  return /^\/book\/[^/]+\/read\/(chapter|keyword)\//.test(path);
+}
+function getReadResume(){
+  try{
+    const raw = localStorage.getItem(READ_RESUME_KEY);
+    if(!raw) return null;
+    const o = JSON.parse(raw);
+    if(!o || !o.bid || !o.term) return null;
+    return o;
+  }catch(_){ return null; }
+}
+function readResumeHash(r){
+  if(!r || !r.bid) return '#/';
+  const mode = r.mode === 'keyword' ? 'keyword' : 'chapter';
+  return '#/book/'+r.bid+'/read/'+mode+'/'+encodeURIComponent(r.term);
+}
+function saveReadResume(){
+  if(!READER.bid || !READER.term) return;
+  try{
+    localStorage.setItem(READ_RESUME_KEY, JSON.stringify({
+      bid: READER.bid,
+      mode: READER.mode || 'chapter',
+      term: READER.term,
+      pageIdx: READER.idx || 0,
+      updatedAt: new Date().toISOString(),
+    }));
+  }catch(_){}
+}
+function persistReadResumeIfReading(){
+  if(!READER.bid || !READER.term) return;
+  if(isOnReadRoute()) saveReadResume();
+}
+function restoreReadPageIdx(bid, mode, term){
+  const saved = getReadResume();
+  if(!saved || saved.bid !== bid || saved.mode !== mode || saved.term !== term) return 0;
+  const idx = parseInt(saved.pageIdx, 10);
+  return Number.isFinite(idx) && idx >= 0 ? idx : 0;
+}
+function maybeAutoRestoreReading(){
+  if(!isHomeHash()) return;
+  const r = getReadResume();
+  if(!r) return;
+  location.hash = readResumeHash(r);
+}
+function continueLastReading(){
+  const r = getReadResume();
+  if(!r){ toast('暂无阅读记录'); return; }
+  location.hash = readResumeHash(r);
+}
+function installReadResumeLifecycle(){
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden') persistReadResumeIfReading();
+  });
+  window.addEventListener('pagehide', ()=> persistReadResumeIfReading());
+}
 let CHAT_MSGS = [];
 let MARK_BOOK = { bid: null, marks: [] };
 let MARK_UI = {
@@ -2623,8 +2715,20 @@ function renderReaderPage(opts){
   else box.scrollTop = y;
   bindReaderMarkEvents();
 }
-function readerPrev(){ if(READER.idx>0){ READER.idx--; renderReaderPage({resetScroll:true}); } }
-function readerNext(){ if(READER.idx<READER.pages.length-1){ READER.idx++; renderReaderPage({resetScroll:true}); } }
+function readerPrev(){
+  if(READER.idx>0){
+    READER.idx--;
+    renderReaderPage({resetScroll:true});
+    saveReadResume();
+  }
+}
+function readerNext(){
+  if(READER.idx<READER.pages.length-1){
+    READER.idx++;
+    renderReaderPage({resetScroll:true});
+    saveReadResume();
+  }
+}
 
 async function chapterCardsForCurrentRead(){
   if(!READER.bid) return [];
@@ -2692,7 +2796,7 @@ async function renderRead(bid, mode, key){
   }
   const term = decodeURIComponent(key);
   const title = (mode==='keyword') ? '关键词：'+term : term;
-  READER = {bid, mode, term, pages:[], idx:0, marks:[]};
+  READER = {bid, mode, term, pages:[], idx:0, threadId:'', marks:[], chatHistLoaded:false};
   // 计算阅读器分页内容
   if(mode==='chapter'){
     const slice = chapterSlice(b.raw_text, term, b.chapters||[]);
@@ -2706,6 +2810,8 @@ async function renderRead(bid, mode, key){
       READER.pages = paginate(joined, 1800).map(arr => highlight(arr.join('\n'), term).replace(/\n/g,'<br>'));
     }
   }
+  const savedIdx = restoreReadPageIdx(bid, mode, term);
+  READER.idx = Math.max(0, Math.min(savedIdx, Math.max(0, READER.pages.length - 1)));
   READER.marks = Array.isArray(b.reader_marks) ? b.reader_marks : [];
   MARK_BOOK = { bid, marks: READER.marks };
   let h='<div class="row" style="justify-content:space-between;align-items:flex-end"><h1>'+esc(title)+'</h1>'
@@ -2757,6 +2863,7 @@ async function renderRead(bid, mode, key){
   renderStarterQuestions();
   clearReadChatPanel();
   await refreshReadCardEntry();
+  saveReadResume();
 }
 function clearReadChatPanel(){
   CHAT_MSGS = [];
@@ -2921,7 +3028,7 @@ async function saveNotes(){
     const who = sp==='me' ? '我（问题）' : sp==='marx' ? '马克思' : '神鲸';
     messages.push({who, content: m.content||''});
   }
-  const marks = includeMarks ? thoughtMarks().filter(m => (m.quote||'').trim()) : [];
+  const marks = includeMarks ? collectMarksForExport('read-chat') : [];
   const md = await buildReadingNotesMd({
     bid: READER.bid,
     contextLabel: markContextLabel(),
