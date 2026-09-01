@@ -239,7 +239,7 @@ async function refreshViewAfterCloudSync(opts){
     return;
   }
   if((m=path.match(/^\/book\/(.+)\/read\/chapter\/(.+)$/)) || (m=path.match(/^\/book\/(.+)\/read\/keyword\/(.+)$/))){
-    if(READER.chatHistLoaded && $('#r_msgs')) await loadReadChat(m[1], {anchor: opts.anchor || 'latest-turn'});
+    if($('#r_msgs')) await loadReadChat(m[1], {anchor: opts.anchor || 'preserve'});
     return;
   }
   if(path==='/settings'){ renderSettings(); return; }
@@ -986,28 +986,42 @@ function drawDiscussReader(){
   if(next) next.disabled = DISCUSS.idx>=DISCUSS.pages.length-1;
   scrollPaneTop(box);
 }
-function discussPrevPage(){ if(DISCUSS.idx>0){ DISCUSS.idx--; drawDiscussReader(); } }
-function discussNextPage(){ if(DISCUSS.idx<DISCUSS.pages.length-1){ DISCUSS.idx++; drawDiscussReader(); } }
-
+function chatMsgRow(m, i, cbClass){
+  const sp=m.speaker || (m.role==='user' ? 'me' : 'shenjing');
+  const who = chatSpeaker(sp);
+  const cls = chatClass(sp);
+  const sel = sp==='me' ? '我的问题' : '回答';
+  return '<div class="msg '+cls+'"><div class="msg-top"><span class="who">'+who+'</span>'
+    + '<label class="msgsel"><input type="checkbox" class="'+cbClass+'" data-i="'+i+'"> '+sel+'</label></div>'
+    + '<div class="bubble">'+applyMarksToHtml(chatHtml(m.content||''))+'</div></div>';
+}
+function chatTypingRow(target){
+  const who = target==='marx' ? '马克思' : '神鲸';
+  return '<div class="msg assistant chat-typing"><div class="msg-top"><span class="who">'+who+'</span></div>'
+    + '<div class="bubble typing"><span class="spinner sm"></span> 正在思考中…</div></div>';
+}
+function paintChatMsgs(box, msgs, cbClass, opts, onCount){
+  if(!box) return;
+  opts = opts || {};
+  if(!msgs.length){
+    box.innerHTML='<div class="muted" style="padding:10px">还没有对话。可直接提问，或点上方建议问题。</div>';
+    if(onCount) onCount();
+    return;
+  }
+  let html = msgs.map((m,i)=>chatMsgRow(m,i,cbClass)).join('');
+  if(opts.typing) html += chatTypingRow(opts.typing);
+  box.innerHTML = html;
+  if(opts.anchor && opts.anchor !== 'preserve'){
+    requestAnimationFrame(()=>scrollChatAnchor(box, opts.anchor));
+  }
+  box.querySelectorAll('.'+cbClass).forEach(cb=>{ cb.onchange = onCount || null; });
+  if(onCount) onCount();
+}
 async function loadDiscuss(bid, opts){
   const tid = DISCUSS.threadId || discussThreadId();
   const msgs=await api('/api/books/'+bid+'/messages?thread_id='+encodeURIComponent(tid));
   DISCUSS.msgs = msgs || [];
-  const box=$('#msgs');
-  if(!DISCUSS.msgs.length){ box.innerHTML='<div class="muted" style="padding:10px">还没有对话。你可以直接提问，或先选择一个建议问题。</div>'; updateDiscussSelCount(); return; }
-  box.innerHTML=DISCUSS.msgs.map((m,i)=>{
-    const sp=m.speaker || (m.role==='user' ? 'me' : 'shenjing');
-    const who = chatSpeaker(sp);
-    const cls = chatClass(sp);
-    const sel = sp==='me' ? '我的问题' : '回答';
-    return '<div class="msg '+cls+'"><div class="msg-top"><span class="who">'+who+'</span>'
-      + '<label class="msgsel"><input type="checkbox" class="d-msgsel-cb" data-i="'+i+'"> '+sel+'</label></div>'
-      + '<div class="bubble">'+applyMarksToHtml(chatHtml(m.content||''))+'</div></div>';
-  }).join('');
-  const mode = (opts && opts.anchor === 'preserve') ? null : ((opts && opts.anchor) || 'bottom');
-  if(mode) requestAnimationFrame(()=>scrollChatAnchor(box, mode));
-  box.querySelectorAll('.d-msgsel-cb').forEach(cb=>cb.onchange=updateDiscussSelCount);
-  updateDiscussSelCount();
+  paintChatMsgs($('#msgs'), DISCUSS.msgs, 'd-msgsel-cb', opts, updateDiscussSelCount);
 }
 function updateDiscussSelCount(){
   const n=document.querySelectorAll('.d-msgsel-cb:checked').length;
@@ -1082,18 +1096,26 @@ async function sendDiscuss(bid){
   const raw=$('#d_input').value.trim();
   if(!raw){ toast('请输入内容'); return; }
   const target = detectTarget(raw);
+  const clean = stripTargetPrefix(raw);
   const sendBtn=$('#d_send');
   const tid = DISCUSS.threadId || discussThreadId();
   if(sendBtn){ sendBtn.disabled=true; sendBtn.textContent='生成中…'; }
   showDiscussStatus('正在等待 '+(target==='marx'?'马克思':'神鲸')+' 回答…');
-  renderDiscussTyping(target);
+  const userMsg = {role:'user', speaker:'me', content: clean || raw, ts: new Date().toISOString()};
+  DISCUSS.msgs = DISCUSS.msgs.concat([userMsg]);
+  paintChatMsgs($('#msgs'), DISCUSS.msgs, 'd-msgsel-cb', {typing: target, anchor: 'latest-turn'}, updateDiscussSelCount);
   try{
     const ctx = await saveContext(bid, true);
     const r=await api('/api/chat','POST',{book_id:bid, content:raw, chapter_title:ctx.chapter_title||'', context_text:ctx.text||'', target, thread_id:tid});
     hideDiscussStatus();
-    if(r.error){ toast('出错：'+r.error); await loadDiscuss(bid, {anchor:'latest-turn'}); return; }
     $('#d_input').value='';
-    await loadDiscuss(bid, {anchor:'latest-turn'});
+    if(r.error){ toast('出错：'+r.error); await loadDiscuss(bid, {anchor:'latest-turn'}); return; }
+    if(r.history && Array.isArray(r.history)){
+      DISCUSS.msgs = r.history;
+      paintChatMsgs($('#msgs'), DISCUSS.msgs, 'd-msgsel-cb', {anchor:'latest-turn'}, updateDiscussSelCount);
+    } else {
+      await loadDiscuss(bid, {anchor:'latest-turn'});
+    }
     if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
     if(r.configured===false){
       const pf = r.prompt || '';
@@ -1107,6 +1129,7 @@ async function sendDiscuss(bid){
   }catch(e){
     hideDiscussStatus();
     toast(e.message||String(e));
+    await loadDiscuss(bid, {anchor:'preserve'});
   }finally{
     if(sendBtn){ sendBtn.disabled=false; sendBtn.textContent='发送'; }
   }
@@ -1117,12 +1140,6 @@ function showDiscussStatus(txt){
   el.style.display='flex';
 }
 function hideDiscussStatus(){ const el=$('#d_status'); if(el) el.style.display='none'; }
-function renderDiscussTyping(target){
-  const box=$('#msgs'); if(!box) return;
-  const who = target==='marx' ? '马克思' : '神鲸';
-  box.innerHTML='<div class="msg assistant"><div class="msg-top"><span class="who">'+who+'</span></div>'
-    + '<div class="bubble typing"><span class="spinner sm"></span> 正在思考中…</div></div>';
-}
 async function saveDiscussReply(bid){
   const txt=$('#dp_reply').value.trim();
   if(!txt){ toast('请粘贴 AI 回复'); return; }
@@ -2279,7 +2296,7 @@ async function refreshMarkViews(opts){
     return;
   }
   if(surf === 'read'){
-    if(READER.bid && READER.chatHistLoaded) await loadReadChat(READER.bid, { anchor: opts.anchor || 'preserve' });
+    if(READER.bid && $('#r_msgs')) await loadReadChat(READER.bid, { anchor: opts.anchor || 'preserve' });
     renderReaderPage();
     return;
   }
@@ -2864,7 +2881,7 @@ async function renderRead(bid, mode, key){
     + '<div class="chat-savebar"><label class="selall"><input type="checkbox" id="r_selall"> 全选</label>'
     + '<label class="selall"><input type="checkbox" id="r_save_marks"> 含标注</label>'
     + '<span id="r_selcount" class="muted">已选 0 条</span>'
-    + '<div class="row" style="gap:8px"><button class="btn ghost sm" id="r_load_hist">加载本章历史</button><button class="btn sec sm" id="r_save">💾 保存选中为读书笔记</button></div></div>'
+    + '<div class="row" style="gap:8px"><button class="btn ghost sm" id="r_load_hist">刷新对话</button><button class="btn sec sm" id="r_save">💾 保存选中为读书笔记</button></div></div>'
     + '<div class="row" style="align-items:flex-end;margin-top:8px"><textarea id="r_input" placeholder="输入问题（可用 @马克思 / @神鲸 开头）…（Enter 发送，Shift+Enter 换行）" style="flex:1;min-height:60px"></textarea>'
     + '<button class="btn" id="r_send">发送</button></div>'
     + '</div></div></div>';
@@ -2881,45 +2898,26 @@ async function renderRead(bid, mode, key){
   const loadHist=$('#r_load_hist'); if(loadHist) loadHist.onclick = ()=>loadReadChat(bid);
   const rSaveMarks=$('#r_save_marks'); if(rSaveMarks) rSaveMarks.onchange = updateSelCount;
   const selall=$('#r_selall'); if(selall) selall.onchange = (e)=>{ document.querySelectorAll('.msgsel-cb').forEach(cb=>cb.checked=e.target.checked); updateSelCount(); };
-  const ch=$('#r_chapter'); if(ch) ch.onchange = async ()=>{ READER.threadId = readThreadId(); renderStarterQuestions(); clearReadChatPanel(); };
+  const ch=$('#r_chapter'); if(ch) ch.onchange = async ()=>{ READER.threadId = readThreadId(); renderStarterQuestions(); await loadReadChat(bid, {anchor:'preserve'}); };
   const input=$('#r_input'); if(input) input.addEventListener('keydown', e=>{
     if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendReadChat(READER.bid, READER.term, READER.mode); }
   });
   bindChatMarkEvents('#r_msgs', 'read-chat');
   READER.threadId = readThreadId();
   renderStarterQuestions();
-  clearReadChatPanel();
+  await loadReadChat(bid, {anchor:'preserve'});
   await refreshReadCardEntry();
   saveReadResume();
 }
-function clearReadChatPanel(){
-  CHAT_MSGS = [];
-  READER.chatHistLoaded = false;
-  const box=$('#r_msgs');
-  if(box) box.innerHTML='<div class="muted" style="padding:10px">当前默认不自动加载历史。你可直接提问，或点「加载本章历史」。</div>';
-  updateSelCount();
+function paintReadChatBox(opts){
+  paintChatMsgs($('#r_msgs'), CHAT_MSGS, 'msgsel-cb', opts, updateSelCount);
 }
 async function loadReadChat(bid, opts){
   const tid = READER.threadId || readThreadId();
   const msgs=await api('/api/books/'+bid+'/messages?thread_id='+encodeURIComponent(tid));
   CHAT_MSGS = msgs || [];
   READER.chatHistLoaded = true;
-  const box=$('#r_msgs');
-  if(!box) return;
-  if(!CHAT_MSGS.length){ box.innerHTML='<div class="muted" style="padding:10px">还没有对话。可点上方建议问题，或直接输入你的问题。</div>'; updateSelCount(); return; }
-  box.innerHTML=CHAT_MSGS.map((m,i)=>{
-    const sp=m.speaker || (m.role==='user' ? 'me' : 'shenjing');
-    const who = chatSpeaker(sp);
-    const cls = chatClass(sp);
-    const sel = sp==='me' ? '我的问题' : '回答';
-    return '<div class="msg '+cls+'"><div class="msg-top"><span class="who">'+who+'</span>'
-      + '<label class="msgsel"><input type="checkbox" class="msgsel-cb" data-i="'+i+'"> '+sel+'</label></div>'
-      + '<div class="bubble">'+applyMarksToHtml(chatHtml(m.content||''))+'</div></div>';
-  }).join('');
-  const mode = (opts && opts.anchor === 'preserve') ? null : ((opts && opts.anchor) || 'bottom');
-  if(mode) requestAnimationFrame(()=>scrollChatAnchor(box, mode));
-  box.querySelectorAll('.msgsel-cb').forEach(cb=>cb.onchange=updateSelCount);
-  updateSelCount();
+  paintReadChatBox(opts);
 }
 function updateSelCount(){
   const n=document.querySelectorAll('.msgsel-cb:checked').length;
@@ -2988,27 +2986,40 @@ function sendStarterQuestion(q){
 async function sendReadChat(bid, term, mode){
   const raw=$('#r_input').value.trim(); if(!raw){ toast('请输入'); return; }
   const target = detectTarget(raw);
+  const clean = stripTargetPrefix(raw);
   const sendBtn=$('#r_send');
   const tid = READER.threadId || readThreadId();
   if(sendBtn){ sendBtn.disabled=true; sendBtn.textContent='生成中…'; }
   showChatStatus('正在等待 '+(target==='marx'?'马克思':'神鲸')+' 回答…');
-  renderTyping(target);
+  const userMsg = {role:'user', speaker:'me', content: clean || raw, ts: new Date().toISOString()};
+  CHAT_MSGS = CHAT_MSGS.concat([userMsg]);
+  READER.chatHistLoaded = true;
+  paintReadChatBox({typing: target, anchor: 'latest-turn'});
   try{
     const b=await api('/api/books/'+bid);
     const ctx=readCtx(b, term, mode);
     const chSel=$('#r_chapter'); const chTitle=chSel?chSel.value:term;
     const r=await api('/api/chat','POST',{book_id:bid, content:raw, chapter_title:chTitle, context_text:ctx, target, thread_id:tid});
     hideChatStatus();
-    if(r.error){ toast('出错：'+r.error); await loadReadChat(bid, {anchor:'latest-turn'}); return; }
     $('#r_input').value='';
+    if(r.error){ toast('出错：'+r.error); await loadReadChat(bid, {anchor:'latest-turn'}); return; }
     if(typeof scheduleCloudSyncPush === 'function') scheduleCloudSyncPush();
-    if(r.configured===false){ readChatFallbackSingle(bid, r.prompt||'', target); await loadReadChat(bid, {anchor:'latest-turn'}); return; }
-    await loadReadChat(bid, {anchor:'latest-turn'});
+    if(r.configured===false){
+      if(r.history && Array.isArray(r.history)) CHAT_MSGS = r.history;
+      paintReadChatBox({anchor:'latest-turn'});
+      readChatFallbackSingle(bid, r.prompt||'', target);
+      return;
+    }
+    if(r.history && Array.isArray(r.history)){
+      CHAT_MSGS = r.history;
+      paintReadChatBox({anchor:'latest-turn'});
+    } else {
+      await loadReadChat(bid, {anchor:'latest-turn'});
+    }
   }catch(e){
     hideChatStatus();
     toast(e.message||String(e));
-    const box=$('#r_msgs');
-    if(box) box.innerHTML='<div class="muted" style="padding:10px">发送失败：'+esc(e.message||String(e))+'</div>';
+    await loadReadChat(bid, {anchor:'preserve'});
   }finally{
     if(sendBtn){ sendBtn.disabled=false; sendBtn.textContent='发送'; }
   }
@@ -3019,12 +3030,6 @@ function showChatStatus(txt){
   el.style.display='flex';
 }
 function hideChatStatus(){ const el=$('#r_status'); if(el) el.style.display='none'; }
-function renderTyping(target){
-  const box=$('#r_msgs'); if(!box) return;
-  const who = target==='marx' ? '马克思' : '神鲸';
-  box.innerHTML='<div class="msg assistant"><div class="msg-top"><span class="who">'+who+'</span></div>'
-    + '<div class="bubble typing"><span class="spinner sm"></span> 正在思考中…</div></div>';
-}
 function readChatFallbackSingle(bid, prompt, target){
   const who = target==='marx' ? '马克思' : '神鲸';
   modal('<span class="close" onclick="closeModal()">×</span><h2>未配置 AI 接口 · 讨论兜底</h2>'
